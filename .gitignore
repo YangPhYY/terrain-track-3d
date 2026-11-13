@@ -1,0 +1,24 @@
+# 生成产物（由 build.py / track.py 产生，不入库）
+index.html
+track.html
+video.html
+index_standalone.html
+mesh.json
+track.json
+track_in_model.geojson
+satellite.jpg
+terrain.stl
+terrain.glb
+test_tdt/
+frames_*/
+render.log
+/*.png
+
+# Python
+__pycache__/
+*.pyc
+
+# 本机私有数据
+*.kml
+*.geojson
+tk.txt

@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>山地地形 HD · 卫星叠加 · three.js r187</title>
+<link rel="icon" href="data:,">
+<script>
+/* file:// 下浏览器会拦截 ES module（CORS origin null），页面会永远停在「正在加载 three.js」。
+   直接双击时自动切到依赖全部内联的单文件版；http:// 打开则保持原版。 */
+if(location.protocol==='file:' && !/standalone/i.test(location.pathname)){
+  location.replace('index_standalone.html'+location.search);
+}
+</script>
+<style>
+*{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden;background:#f4f6f9;
+font:13px/1.65 system-ui,"Microsoft YaHei",sans-serif;color:#243042}
+#stage{position:absolute;inset:0}canvas{display:block}
+.panel{position:absolute;background:#fff;border:1px solid #e2e7ef;border-radius:10px;
+padding:12px 14px;box-shadow:0 2px 10px rgba(30,50,80,.06)}
+.info{left:16px;top:16px;min-width:264px}
+.ctrl{right:16px;top:16px;width:228px}
+/* 矮窗口（如笔记本非全屏）时两侧面板内部滚动，避免底部与 #tip / 罗盘重叠 */
+/* 提高特异性以覆盖 track.py 注入的 .panel{max-height:calc(100vh - 32px)}；
+   两侧面板几乎用满高度，内容超高时才内部滚动 */
+.panel.info,.panel.ctrl{max-height:calc(100vh - 26px);overflow-y:auto;scrollbar-width:thin}
+.info::-webkit-scrollbar,.ctrl::-webkit-scrollbar{width:6px}
+.info::-webkit-scrollbar-thumb,.ctrl::-webkit-scrollbar-thumb{background:#d9e1ec;border-radius:3px}
+h1{margin:0 0 8px;font-size:15px;font-weight:500}
+.kv{display:flex;justify-content:space-between;gap:12px;color:#5b6779}
+.kv b{font-weight:500;color:#243042;text-align:right}
+.row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:7px 0}
+.row label{color:#5b6779}
+input[type=range]{width:100%;accent-color:#2681ff}
+.val{font-variant-numeric:tabular-nums;color:#185fa5;min-width:38px;text-align:right}
+.sep{height:1px;background:#e9edf3;margin:10px 0}
+button{font:12px system-ui,"Microsoft YaHei",sans-serif;background:#eef4ff;color:#185fa5;
+border:1px solid #cddffb;border-radius:6px;padding:6px 9px;cursor:pointer;flex:1}
+button:hover{background:#e0ecff}
+.btns{display:flex;gap:6px;margin-top:8px}
+.chk{display:flex;align-items:center;gap:6px;color:#5b6779;cursor:pointer}
+.legend{display:flex;align-items:center;gap:6px;font-size:11px;color:#7b8798;margin-top:6px}
+.sw{width:14px;height:0;border-top:2px solid #185fa5}
+.sw2{width:14px;height:0;border-top:2px dashed #d85a30}
+#status{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:#fff;
+border:1px solid #e2e7ef;border-radius:8px;padding:10px 16px;color:#a32d2d;max-width:70vw}
+/* 提示条横向避开左侧信息面板(≈280px)与右下罗盘，避免矮窗口下压住轨迹样式控件 */
+#tip{position:absolute;left:360px;right:96px;bottom:12px;color:#7b8798;
+font-size:10px;line-height:1.5;max-width:none}
+/* 矮窗口：收紧行距并隐藏次要提示，尽量让轨迹样式控件也在首屏可见 */
+@media (max-height:820px){
+  #tip{display:none}
+  .panel{font-size:12px;line-height:1.45}
+  .panel .kv,.panel .row,.trkGrid .row{margin:3px 0}
+  .panel .sep{margin:6px 0}
+  h1{font-size:14px;margin-bottom:5px}
+  .panel button{padding:4px 7px}
+}
+.src{color:#8b96a6;font-size:11px;margin-top:8px}
+#compass{position:absolute;right:20px;bottom:20px;width:56px;height:56px;border-radius:50%;
+background:rgba(255,255,255,.94);border:1px solid #d9e1ec;box-shadow:0 2px 8px rgba(30,50,80,.12);
+pointer-events:none}
+#compassArrow{position:absolute;left:22px;top:7px;width:0;height:0;
+border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:18px solid #d8452a;
+transform-origin:6px 20px}
+#compass span{position:absolute;bottom:2px;left:0;width:100%;text-align:center;
+font-size:10px;color:#5b6779}
+#compass small{position:absolute;top:-16px;left:0;width:100%;text-align:center;
+font-size:9px;color:#8b96a6}
+/* 插画沙盘模式：隐藏写实模式专属控件与图例；两套控件互斥，不挤占面板高度 */
+body.art #satOnly,body.art .legend{display:none}
+body:not(.art) #artOnly{display:none}
+#artOnly select{font:12px system-ui,"Microsoft YaHei",sans-serif;color:#243042;
+background:#fff;border:1px solid #d9e1ec;border-radius:5px;padding:3px 5px;
+max-width:118px;flex:1;min-width:0}
+#artOnly .row{margin:5px 0}
+#artOnly .sep{margin:7px 0 3px}
+</style>
+<script type="importmap">{"imports":{"three":"./vendor/three.module.js"}}</script>
+</head>
+<body class="art">
+<div id="stage"></div>
+<div class="panel info">
+<h1>山地地形 · 插画沙盘</h1>
+<div id="meta"></div>
+<div class="legend"><span class="sw"></span>纠偏后地块边界（WGS84）<span class="sw2"></span>原始坐标（GCJ02）</div>
+<div class="src" id="src"></div>
+</div>
+<div class="panel ctrl">
+<div class="row"><label>垂直夸张</label><span class="val" id="exVal">1.6×</span></div>
+<input type="range" id="ex" min="0.5" max="4" step="0.1" value="1.6">
+<div id="artOnly">
+  <div class="row"><label>画面风格</label><select id="artMode">
+    <option value="art">插画沙盘</option><option value="sat">卫星写实</option></select></div>
+  <div class="row"><label>山体色调</label><select id="pal">
+    <option value="autumn">秋冬赭褐</option><option value="loess">暖黄土坡</option>
+    <option value="slate">灰岩冷调</option><option value="mono">素模石膏</option></select></div>
+  <label class="chk"><input type="checkbox" id="base" checked>圆角沙盘底座</label>
+  <div class="sep"></div>
+</div>
+<div id="satOnly">
+  <div class="row"><label>等高线间距</label><span class="val" id="ctVal">30 m</span></div>
+  <input type="range" id="ct" min="10" max="100" step="10" value="30">
+  <div class="sep"></div>
+  <label class="chk"><input type="checkbox" id="sat" checked>卫星影像叠加</label>
+  <label class="chk"><input type="checkbox" id="showCt">等高线</label>
+  <label class="chk"><input type="checkbox" id="showBd">地块边界（纠偏后）</label>
+  <label class="chk"><input type="checkbox" id="showRaw">原始坐标边界</label>
+  <label class="chk"><input type="checkbox" id="showWf">网格线框</label>
+</div>
+<label class="chk"><input type="checkbox" id="autoRot">自动旋转</label>
+<div class="btns"><button id="stl">导出 STL</button><button id="glb">导出 GLB</button></div>
+<div class="btns"><button id="topView">北朝上俯视</button></div>
+<div class="btns"><button id="reset">重置视角</button></div>
+</div>
+<div id="compass"><small>北</small><div id="compassArrow"></div><span>N</span></div>
+<div id="status">正在加载 three.js…</div>
+<div id="tip">拖拽旋转 · 滚轮缩放 · 右键平移　|　Imagery © Esri, Maxar, Earthstar Geographics　|　Elevation: Terrarium DEM (SRTM/ASTER)　|　双击 index.html 会自动切到离线单文件版</div>
+
+<script>
+window.addEventListener('error',function(e){
+  document.getElementById('status').textContent='加载失败：'+(e.message||'模块未就绪');
+});
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from './vendor/OrbitControls.js';
+import { STLExporter } from './vendor/STLExporter.js';
+import { GLTFExporter } from './vendor/GLTFExporter.js';
+
+const D = __DATA__, M = D.meta;
+const el = id => document.getElementById(id);
+const MIN = M.elev_min, MAX = M.elev_max;
+/* 非绿色调色板：按高程分层。当前为 11 月华北山地枯黄/赭褐/裸岩观感 */
+const PALETTES = {
+  autumn:[[0,[.20,.17,.14]],[.28,[.35,.28,.21]],[.55,[.58,.46,.31]],
+          [.78,[.72,.63,.48]],[1,[.86,.82,.73]]],
+  loess: [[0,[.26,.20,.14]],[.30,[.52,.38,.22]],[.58,[.76,.60,.34]],
+          [.80,[.87,.76,.52]],[1,[.95,.91,.80]]],
+  slate: [[0,[.20,.23,.26]],[.30,[.35,.39,.42]],[.58,[.54,.57,.58]],
+          [.80,[.70,.72,.72]],[1,[.88,.89,.89]]],
+  mono:  [[0,[.55,.55,.53]],[.35,[.70,.70,.68]],[.70,[.84,.84,.82]],
+          [1,[.96,.96,.95]]]
+};
+/* 默认插画 + 秋冬赭褐；URL 参数 art= / pal= 可覆盖（供逐帧渲染），其余记在浏览器 */
+let ART = true, PAL = 'autumn';
+const Q0 = new URLSearchParams(location.search);
+if(Q0.has('art'))ART = Q0.get('art') !== 'sat';
+if(Q0.has('pal') && PALETTES[Q0.get('pal')])PAL = Q0.get('pal');
+else try{
+  const a=JSON.parse(localStorage.getItem('terrain_hd_art_v1')||'{}');
+  if(!Q0.has('art') && typeof a.art==='boolean')ART=a.art;
+  if(!Q0.has('pal') && PALETTES[a.pal])PAL=a.pal;
+  if(typeof a.base==='boolean')el('base').checked=a.base;
+}catch(e){}
+function colorOf(e){
+  const S = PALETTES[PAL] || PALETTES.autumn;
+  const t = Math.max(0,Math.min(1,(e-MIN)/Math.max(1e-6,MAX-MIN)));
+  for(let k=0;k<S.length-1;k++){
+    const [t0,c0]=S[k],[t1,c1]=S[k+1];
+    if(t<=t1){const f=(t-t0)/(t1-t0);return c0.map((v,j)=>v+(c1[j]-v)*f);}
+  }
+  return S[S.length-1][1];
+}
+el('meta').innerHTML = [
+ ['坐标', 'GCJ02 → WGS84'],
+ ['纠偏', M.offset_m[0]+' / +'+M.offset_m[1]+' m'],
+ ['范围', M.bbox_wgs84[0].toFixed(5)+' – '+M.bbox_wgs84[2].toFixed(5)+' E'],
+ ['', M.bbox_wgs84[1].toFixed(5)+' – '+M.bbox_wgs84[3].toFixed(5)+' N'],
+ ['建模区', Math.round(M.width_m)+' × '+Math.round(M.height_m)+' m'],
+ ['裁切', '轨迹外接 +'+M.expand_m+' m / 每边'],
+ ['高程', Math.round(MIN)+' – '+Math.round(MAX)+' m'],
+ ['落差', Math.round(MAX-MIN)+' m'],
+ ['网格', M.vertices+' 顶点 / '+M.triangles+' 面']
+].map(([k,v])=>'<div class="kv"><span>'+k+'</span><b>'+v+'</b></div>').join('');
+el('src').textContent = M.dem+' · '+M.imagery;
+
+const scene = new THREE.Scene();
+const BG0 = ART ? 0xffffff : 0xf4f6f9;
+scene.background = new THREE.Color(BG0);
+scene.fog = new THREE.Fog(BG0, 3200, 8000);
+const camera = new THREE.PerspectiveCamera(44, innerWidth/innerHeight, 1, 16000);
+const DIAG = Math.hypot(M.width_m, M.height_m);   // 模型对角线：窗口裁切后按它等比定相机距离
+const HOME = new THREE.Vector3(DIAG*0.78, DIAG*0.876, -DIAG*0.96);
+camera.position.copy(HOME);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+el('stage').appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0,(MAX-MIN)*0.55,0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.maxPolarAngle = Math.PI*0.495;
+controls.minDistance = 200;
+controls.maxDistance = 8000;
+controls.autoRotateSpeed = 0.7;
+
+const ambient = new THREE.AmbientLight(0xffffff,1.05);
+scene.add(ambient);
+const sun = new THREE.DirectionalLight(0xfff1dc,1.35);
+sun.position.set(900,1800,1100);
+scene.add(sun);
+
+const N = D.verts.length;
+const pos = new Float32Array(N*3), col = new Float32Array(N*3), uv = new Float32Array(N*2);
+const NGX = M.grid[0]+1, NGY = M.grid[1]+1, NG = NGX*NGY;
+/* 陡坡压暗，增强插画沙盘的块面层次（grid 顶点顺序 i*(NY+1)+j） */
+function slopeShade(k){
+  if(k>=NG)return 1;
+  const i=Math.floor(k/NGY), j=k%NGY;
+  const h=(a,b)=>D.verts[a*NGY+b][1];
+  const dx=(h(Math.min(i+1,NGX-1),j)-h(Math.max(i-1,0),j))/(2*M.width_m/(NGX-1));
+  const dz=(h(i,Math.min(j+1,NGY-1))-h(i,Math.max(j-1,0),j))/(2*M.height_m/(NGY-1));
+  return 1-Math.min(.30,Math.hypot(dx,dz)*0.55);
+}
+function fillColors(){
+  for(let i=0;i<N;i++){
+    const p=D.verts[i], c=colorOf(D.elev[i]), t=D.uv[i], s=slopeShade(i);
+    pos[i*3]=p[0]; pos[i*3+1]=p[1]; pos[i*3+2]=p[2];
+    col[i*3]=c[0]*s; col[i*3+1]=c[1]*s; col[i*3+2]=c[2]*s;
+    uv[i*2]=t[0]; uv[i*2+1]=t[1];
+  }
+}
+fillColors();
+function geometry(tris){
+  const arr=new Uint32Array(tris.length*3);
+  tris.forEach((t,i)=>{arr[i*3]=t[0];arr[i*3+1]=t[1];arr[i*3+2]=t[2];});
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  g.setAttribute('color',new THREE.BufferAttribute(col,3));
+  g.setAttribute('uv',new THREE.BufferAttribute(uv,2));
+  g.setIndex(new THREE.BufferAttribute(arr,1));
+  g.computeVertexNormals();
+  return g;
+}
+const topGeo = geometry(D.top_tris);
+const shellGeo = geometry(D.shell_tris);
+const topMat = new THREE.MeshStandardMaterial({vertexColors:true,roughness:.95,metalness:0,side:THREE.DoubleSide});
+const shellMat = new THREE.MeshStandardMaterial({color:0x6b5c4c,roughness:1,side:THREE.DoubleSide});
+const topMesh = new THREE.Mesh(topGeo,topMat);
+const shellMesh = new THREE.Mesh(shellGeo,shellMat);
+const group = new THREE.Group();
+group.add(topMesh,shellMesh);
+scene.add(group);
+
+/* 圆角沙盘底座：白细边 + 浅暖灰石板 + 柔影。不是水面，不淹没任何地形 */
+function rrShape(w,h,r){
+  const s=new THREE.Shape(), x=-w/2, y=-h/2;
+  s.moveTo(x+r,y);
+  s.lineTo(x+w-r,y); s.quadraticCurveTo(x+w,y,x+w,y+r);
+  s.lineTo(x+w,y+h-r); s.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  s.lineTo(x+r,y+h); s.quadraticCurveTo(x,y+h,x,y+h-r);
+  s.lineTo(x,y+r); s.quadraticCurveTo(x,y,x+r,y);
+  return s;
+}
+function rrMesh(w,h,r,color,dy,opacity){
+  const m=new THREE.Mesh(new THREE.ShapeGeometry(rrShape(w,h,r)),
+    new THREE.MeshBasicMaterial({color:color,transparent:opacity<1,opacity:opacity,
+      side:THREE.DoubleSide,depthWrite:opacity>=1}));
+  m.rotation.x=-Math.PI/2; m.position.y=dy;
+  return m;
+}
+const PAD=55, W0=M.width_m+2*PAD, H0=M.height_m+2*PAD, R0=Math.min(W0,H0)*0.14;
+const baseGroup=new THREE.Group();
+const shadow=rrMesh(W0+26,H0+26,R0+10,0x2b2b2b,-5,.075);
+shadow.position.x=14; shadow.position.z=-18;
+baseGroup.add(shadow,
+  rrMesh(W0+14,H0+14,R0+6,0xffffff,-1.5,1),
+  rrMesh(W0,H0,R0,0xd9d2c4,0,1));
+scene.add(baseGroup);
+function syncBase(){baseGroup.position.y=M.base_m*group.scale.y;}
+syncBase();
+
+function recolor(){
+  fillColors();
+  topGeo.attributes.color.needsUpdate=true;
+  shellGeo.attributes.color.needsUpdate=true;
+}
+let satTex = null;
+function applyMode(){
+  const on = !ART && el('sat').checked && satTex;
+  topMat.map = on ? satTex : null;
+  topMat.vertexColors = !on;
+  topMat.needsUpdate = true;
+}
+new THREE.TextureLoader().load('./satellite.jpg', t=>{
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  satTex = t; applyMode();
+}, undefined, e=>console.warn('satellite.jpg unavailable',e));
+
+function line(points,color,dashed){
+  const g=new THREE.BufferGeometry().setFromPoints(points.map(p=>new THREE.Vector3(p[0],p[1],p[2])));
+  const m=dashed?new THREE.LineDashedMaterial({color:color,dashSize:22,gapSize:14})
+                :new THREE.LineBasicMaterial({color:color});
+  const l=new THREE.LineLoop(g,m);
+  if(dashed)l.computeLineDistances();
+  return l;
+}
+const bdW = line(D.boundary_wgs84,0x185fa5,false);
+const bdG = line(D.boundary_gcj02,0xd85a30,true);
+bdG.visible=false;
+group.add(bdW,bdG);
+
+const wf = new THREE.LineSegments(new THREE.WireframeGeometry(topGeo),
+  new THREE.LineBasicMaterial({color:0x37618f,transparent:true,opacity:.13,depthWrite:false}));
+wf.visible=false; group.add(wf);
+const grid = new THREE.GridHelper(M.width_m*1.6,18,0xc7d2e0,0xdce3ed);
+grid.position.y = M.base_m - 2; group.add(grid);
+
+let contour = null;
+function buildContours(interval){
+  if(contour){group.remove(contour);contour.geometry.dispose();}
+  const out=[],levels=[];
+  for(let L=Math.ceil(MIN/interval)*interval;L<MAX;L+=interval)levels.push(L);
+  for(const t of D.top_tris){
+    const p=[D.verts[t[0]],D.verts[t[1]],D.verts[t[2]]];
+    const h=[D.elev[t[0]],D.elev[t[1]],D.elev[t[2]]];
+    for(const L of levels){
+      const pts=[];
+      for(let e=0;e<3;e++){
+        const a=e,b=(e+1)%3;
+        if((h[a]<L&&h[b]>=L)||(h[b]<L&&h[a]>=L)){
+          const f=(L-h[a])/(h[b]-h[a]);
+          pts.push([p[a][0]+(p[b][0]-p[a][0])*f,
+                    p[a][1]+(p[b][1]-p[a][1])*f+2.5,
+                    p[a][2]+(p[b][2]-p[a][2])*f]);
+        }
+      }
+      if(pts.length===2)out.push(...pts[0],...pts[1]);
+    }
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(out,3));
+  contour=new THREE.LineSegments(g,new THREE.LineBasicMaterial({color:0x2b3d55,transparent:true,opacity:.6,depthWrite:false}));
+  contour.visible=el('showCt').checked;
+  group.add(contour);
+}
+buildContours(30);
+
+group.scale.y = 1.6;
+syncBase();
+
+/* 插画沙盘 / 卫星写实：切换背景、光照、辅助线、底座与配色 */
+function applyArt(){
+  document.body.classList.toggle('art',ART);
+  el('artMode').value=ART?'art':'sat';
+  el('pal').value=PAL;
+  const bg=ART?0xffffff:0xf4f6f9;
+  scene.background.setHex(bg); scene.fog.color.setHex(bg);
+  baseGroup.visible=ART&&el('base').checked;
+  grid.visible=!ART;
+  bdW.visible=!ART&&el('showBd').checked;
+  bdG.visible=!ART&&el('showRaw').checked;
+  wf.visible=!ART&&el('showWf').checked;
+  if(contour)contour.visible=!ART&&el('showCt').checked;
+  ambient.intensity=ART?1.05:1.35;
+  sun.intensity=ART?1.35:1.7;
+  sun.color.setHex(ART?0xfff1dc:0xffffff);
+  const low=(PALETTES[PAL]||PALETTES.autumn)[0][1];
+  shellMat.color.setRGB(low[0]*1.1+.08,low[1]*1.1+.08,low[2]*1.1+.08);
+  recolor(); applyMode();
+  try{localStorage.setItem('terrain_hd_art_v1',
+    JSON.stringify({art:ART,pal:PAL,base:el('base').checked}));}catch(e){}
+}
+el('artMode').onchange=e=>{ART=e.target.value==='art';applyArt();};
+el('pal').onchange=e=>{PAL=e.target.value;applyArt();};
+el('base').onchange=applyArt;
+el('ex').oninput=e=>{const v=+e.target.value;group.scale.y=v;
+  el('exVal').textContent=v.toFixed(1)+'×';syncBase();};
+el('ct').oninput=e=>{const v=+e.target.value;el('ctVal').textContent=v+' m';buildContours(v);};
+el('sat').onchange=applyMode;
+el('showCt').onchange=e=>{if(contour)contour.visible=!ART&&e.target.checked;};
+el('showBd').onchange=e=>{bdW.visible=!ART&&e.target.checked;};
+el('showRaw').onchange=e=>{bdG.visible=!ART&&e.target.checked;};
+el('showWf').onchange=e=>{wf.visible=!ART&&e.target.checked;};
+el('autoRot').onchange=e=>{controls.autoRotate=e.target.checked;};
+el('reset').onclick=()=>{camera.position.copy(HOME);controls.target.set(0,(MAX-MIN)*0.55,0);controls.update();};
+el('topView').onclick=()=>{location.href=location.pathname+'?top=1';};
+if(location.search.indexOf('top')>=0){
+  el('topView').textContent='返回 3D 视角';
+  el('topView').onclick=()=>{location.href=location.pathname;};
+}
+applyArt();
+
+function exportGroup(){
+  const g=new THREE.Group();
+  const t=topMesh.clone();
+  t.material=new THREE.MeshStandardMaterial({color:0xffffff,roughness:.95,side:THREE.DoubleSide});
+  g.add(t,shellMesh.clone());
+  g.scale.y=group.scale.y;
+  g.updateMatrixWorld(true);
+  return g;
+}
+function download(blob,name){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);a.download=name;a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+}
+el('stl').onclick=()=>{
+  const r=new STLExporter().parse(exportGroup(),{binary:true});
+  download(new Blob([r],{type:'model/stl'}),'terrain_hd.stl');
+};
+el('glb').onclick=()=>{
+  new GLTFExporter().parse(exportGroup(),
+    r=>download(new Blob([r],{type:'model/gltf-binary'}),'terrain_hd.glb'),
+    e=>console.error(e),{binary:true});
+};
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+el('status').style.display='none';
+(function loop(){requestAnimationFrame(loop);controls.update();renderer.render(scene,camera);})();
+</script>
+</body>
+</html>
