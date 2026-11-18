@@ -9,7 +9,7 @@
 页面预览与逐帧渲染共用同一份 applyCam / shotAt，构图完全一致。
 video.html 由当前 index.html 派生，地形与轨迹层完全沿用，不改动主页面。
 """
-import json, os
+import json, os, re
 
 HERE = os.environ.get("TERRAIN_HOME") or os.path.dirname(os.path.abspath(__file__))
 
@@ -25,15 +25,22 @@ src = open(os.path.join(HERE, "index.html"), encoding="utf-8").read()
 
 VIDEO_CSS = """
 /* 视频模式：隐藏全部 UI，输出干净画面。
-   途径点标签 .lbl.wp 保留（由 updateLabels 控制显隐），起终点/航点标签隐藏。 */
-.panel,#tip,#status,.lbl:not(.wp),#compass{display:none!important}
+   途径点标签 .lbl.wp 保留（由 updateLabels 控制显隐），起终点/航点标签隐藏。
+   .pHandle 是页面两侧面板的收起把手，视频里同样隐藏。 */
+.panel,#tip,#status,.lbl:not(.wp),#compass,.pHandle{display:none!important}
+/* 逐帧渲染是「动画时间」不是墙上时间：CSS 过渡会让透明标签停在半透状态，
+   所以成片页关掉 .lbl 的 opacity 过渡，opacity 直接由脚本给值 */
+.lbl{transition:none!important}
 #aspBox{display:none!important}
 html,body{background:#fff}
 """
 
-LOOP = ("(function loop(){requestAnimationFrame(loop);controls.update();"
-        "updateLabels();renderer.render(scene,camera);})();")
-assert LOOP in src, "render loop not found (index.html changed?)"
+# 用正则认循环，而不是逐字对齐 track.py 里的那串拼接：
+# 之前每加一句（比如画幅视口裁切）这里就 assert 失败，得手动同步两份长字符串。
+LOOP_RE = re.compile(
+    r"\(function loop\(\)\{requestAnimationFrame\(loop\);if\(window\.__exporting\)return;"
+    r".*?renderer\.render\(scene,camera\);\}\)\(\);", re.S)
+assert LOOP_RE.search(src), "render loop not found (index.html changed?)"
 assert "function applyCam(" in src and "function shotAt(" in src \
        and "function unpackShots(" in src, \
        "camera helpers missing (run python3 track.py first)"
@@ -66,11 +73,15 @@ function camAt(t){
 /* 返回 true 表示这一帧已渲染完毕，可截图 */
 window.__setFrame = function(n){
   camAt(n/FPS);
+  if(window.__applyGrowAt)window.__applyGrowAt(n/FPS);   /* 轨迹生长：按秒切 drawRange */
   updateLabels();          /* 逐帧镜头下也要更新途径点标签的位置与可见性 */
   renderer.render(scene,camera);
   return true;
 };
 /* 等卫星贴图真正加载完再允许出帧，否则前几帧会没有影像 */
+window.__frameMode = true;      /* 逐帧模式：轨迹生长只认 __setFrame 传进来的时刻 */
+/* 视频页窗口本身就是成片尺寸，撤掉画幅视口裁切（否则 viewport 比窗口小一圈，出片带黑边） */
+if(typeof applyAspect==='function')applyAspect();
 window.__ready = false;
 (function waitTexture(){
   if(typeof satTex!=='undefined' && satTex && satTex.image && satTex.image.width>0){
@@ -82,7 +93,7 @@ window.__ready = false;
 
 frame_js = FRAME_JS.replace("__SHOTS__", json.dumps(SHOTS, separators=(",", ":")))
 page = src.replace("</style>", VIDEO_CSS + "</style>")
-page = page.replace(LOOP, NEW_LOOP + frame_js)
+page = LOOP_RE.sub(lambda m: NEW_LOOP + frame_js, page, count=1)
 assert "window.__setFrame" in page and ".panel,#tip" in page
 open(os.path.join(HERE, "video.html"), "w", encoding="utf-8").write(page)
 print("video.html: %d B, %d shots, duration %.1f s" %

@@ -80,20 +80,33 @@ if (!STYLE) {
 // 不做批量删除：同一分辨率的帧目录按帧号覆盖写入，ffmpeg 用 -frames:v 严格截取
 mkdirSync(FRAMES, { recursive: true });
 
+/* 渲染后端：默认走 D3D11 硬件光栅（约 0.5 s/帧）；
+   RENDER_GPU=0 时退回 SwiftShader 软件渲染（约 2 s/帧，但完全不依赖显卡驱动）。
+   软件渲染长跑（>100 帧）会因显存/内存膨胀把标签页拖死，硬件后端没有这个问题。 */
+const GPU_BACKEND = process.env.RENDER_GPU !== '0';
 const edge = spawn(EDGE, [
-  '--headless=new', '--disable-gpu', '--enable-unsafe-swiftshader',
-  '--use-gl=angle', '--use-angle=swiftshader',
+  '--headless=new',
+  ...(GPU_BACKEND
+    ? ['--ignore-gpu-blocklist', '--enable-gpu-rasterization', '--use-angle=d3d11']
+    : ['--disable-gpu', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader']),
   '--no-first-run', '--no-default-browser-check', '--no-proxy-server',
   '--disable-background-timer-throttling', '--hide-scrollbars',
   `--user-data-dir=${PROFILE}`, `--remote-debugging-port=${PORT}`,
   `--window-size=${W},${H}`, 'about:blank'
 ], { stdio: 'ignore' });
-log(`spawn Edge pid=${edge.pid} port=${PORT}`);
+log(`spawn Edge pid=${edge.pid} port=${PORT} backend=${GPU_BACKEND ? 'd3d11' : 'swiftshader'}`);
 const killEdge = () => {
   spawnSync('taskkill', ['/PID', String(edge.pid), '/T', '/F'], { stdio: 'ignore' });
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const watchdog = setTimeout(() => { log('WATCHDOG timeout'); killEdge(); process.exit(2); }, 25 * 60 * 1000);
+/* 看门狗只负责兜底“卡死”，不能当作总时长上限：长片（如 1800 帧）按帧数放宽，
+   每帧预算 20 s，最少 25 min；也可用 RENDER_WATCH_MIN 显式覆盖。 */
+const WATCH_MIN = +(process.env.RENDER_WATCH_MIN ||
+  Math.max(25, Math.ceil(TOTAL * 20 / 60)));
+const watchdog = setTimeout(() => {
+  log('WATCHDOG timeout after ' + WATCH_MIN + ' min');
+  killEdge(); process.exit(2);
+}, WATCH_MIN * 60 * 1000);
 watchdog.unref();
 
 // 用 node:http 直连，避开 fetch/系统代理导致的挂起

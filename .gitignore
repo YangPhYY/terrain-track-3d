@@ -12,6 +12,7 @@ terrain.glb
 test_tdt/
 frames_*/
 render.log
+_expdl_*/                     # 网页导出自检的下载目录
 /*.png
 
 # Python

@@ -16,7 +16,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 VENDORS = ["three.core.js", "three.module.js",
-           "OrbitControls.js", "STLExporter.js", "GLTFExporter.js"]
+           "OrbitControls.js", "STLExporter.js", "GLTFExporter.js",
+           # 网页直出视频用的 MP4 封装器（file:// 下动态 import 会被 CORS 拦，这里内联成全局）
+           "mp4-muxer.js"]
 
 
 def read(rel):

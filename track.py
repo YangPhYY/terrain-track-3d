@@ -11,7 +11,7 @@ import json, math, os, re, sys, html as htmlmod
 HERE = os.environ.get("TERRAIN_HOME") or os.path.dirname(os.path.abspath(__file__))
 # 在两种 KML 格式间切换：奥维 LineString / 两步路 gx:Track
 # 命令行 --kml=路径 可临时覆盖，优先级高于下面的默认值
-KML = r"E:\下载\山顶人家小顶山环线.kml"
+KML = r"E:\下载\山顶人家小顶山徐霞客古道环线.kml"
 for _a in sys.argv[1:]:
     if _a.startswith("--kml="):
         KML = _a.split("=", 1)[1].strip()
@@ -42,8 +42,9 @@ DEFAULT_SHOTS = [
 ]
 DEFAULT_DURATION = 10.0
 DEFAULT_ASPECT = "0"          # 0=不显示画幅框 / 916=竖屏 / 169=横屏
-COORD_NOTE = "CGCS2000（≈WGS84，未纠偏）"
-CORR_OK, RMSE_OK = 0.9344, 21.87
+# COORD_NOTE 在解析 KML 后按实际格式赋值（两步路 gx:Track = WGS84；奥维 LineString = CGCS2000）
+# 历史对照（旧轨迹实测）：原样 corr 0.9344 / RMSE 21.87；强行纠偏后 -0.7282 / 113.56。
+# 现在 corr、RMSE 每次按当前轨迹实算，仅保留「纠偏后」这组负值作为反例参考。
 CORR_BAD, RMSE_BAD = -0.7282, 113.56
 
 mesh = json.load(open(os.path.join(HERE, "mesh.json"), encoding="utf-8"))
@@ -98,7 +99,16 @@ for i in range(NX + 1):
 assert err < 0.1, "grid index mismatch: %.3f" % err
 
 kml = open(KML, encoding="utf-8-sig").read()
-title = re.search(r"<Document[^>]*>\s*<name>(.*?)</name>", kml, re.S).group(1).strip()
+
+
+def strip_cdata(s):
+    """两步路把标题/标注名包在 CDATA 里，直接显示会出现 <![CDATA[…]]> 字面量。"""
+    s = (s or "").strip()
+    m = re.match(r"^<!\[CDATA\[(.*?)\]\]>$", s, re.S)
+    return (m.group(1) if m else s).strip()
+
+
+title = strip_cdata(re.search(r"<Document[^>]*>\s*<name>(.*?)</name>", kml, re.S).group(1))
 pts, whens, line_ids = [], [], []
 if "<gx:Track>" in kml:  # 两步路：带时间戳的实测轨迹
     track_xml = re.search(r"<gx:Track>(.*?)</gx:Track>", kml, re.S).group(1)
@@ -118,6 +128,8 @@ else:                     # 奥维互动地图：LineString，OvCoordType=CGCS20
             line_ids.append(lid)
     SOURCE = "奥维互动地图 KML / CGCS2000"
 assert pts and len(whens) == len(pts) == len(line_ids)
+COORD_NOTE = ("WGS84（两步路实测，未纠偏）" if "<gx:Track>" in kml
+              else "CGCS2000（≈WGS84，未纠偏）")
 
 M_LON = W / (box[2] - box[0])
 M_LAT = H / (box[3] - box[1])
@@ -131,8 +143,16 @@ def inside(p):
     return box[0] <= p[0] <= box[2] and box[1] <= p[1] <= box[3]
 
 
-# 坐标系判定结论（KML 高程 vs Terrarium DEM）：原样相关 0.9344，纠偏后 -0.7282
-BIAS = sum(p[2] - dem_at(*to_m(p[0], p[1])) for p in pts) / len(pts)  # KML 高程相对 DEM 的系统偏差
+# 贴合校验：KML 高程 vs Terrarium DEM 的皮尔逊相关与 RMSE（每次按当前轨迹实算）。
+# 坐标系判错（该纠没纠 / 不该纠却纠）时相关性会掉到 0 附近甚至变负，是换区域时最灵敏的探针。
+DEMS = [dem_at(*to_m(p[0], p[1])) for p in pts]
+BIAS = sum(p[2] - d for p, d in zip(pts, DEMS)) / len(pts)  # KML 高程相对 DEM 的系统偏差
+_mg = sum(p[2] for p in pts) / len(pts)
+_md = sum(DEMS) / len(DEMS)
+_sg = math.sqrt(sum((p[2] - _mg) ** 2 for p in pts))
+_sd = math.sqrt(sum((d - _md) ** 2 for d in DEMS))
+CORR = round(sum((p[2] - _mg) * (d - _md) for p, d in zip(pts, DEMS)) / (_sg * _sd), 4) if _sg and _sd else 0.0
+RMSE = round(math.sqrt(sum((p[2] - d) ** 2 for p, d in zip(pts, DEMS)) / len(pts)), 2)
 
 gps = [p[2] for p in pts]
 length_all = sum(dist(a, b) for a, b in zip(pts, pts[1:]))
@@ -173,12 +193,18 @@ for block in re.findall(r"<Placemark id=.*?</Placemark>", kml, re.S):
     mc = re.search(r"<coordinates>(.*?)</coordinates>", block, re.S)
     if not (mid and mname and mc):
         continue
-    pid, name = mid.group(1), htmlmod.unescape(mname.group(1)).strip()
+    pid, name = mid.group(1), strip_cdata(htmlmod.unescape(mname.group(1))).strip()
     lon, lat, g = map(float, mc.group(1).strip().split(",")[:3])
     if not inside((lon, lat)):
         continue
+    # 两步路会导出大量无名 realPoint（随手打的点）以及 startPoint/endPoint；
+    # 后者与上面的 endpoints 重复标一次，无名点只有圆点没有含义 —— 都跳过。
+    if pid in ("startPoint", "endPoint"):
+        continue
     x, z = to_m(lon, lat)
     d = dem_at(x, z)
+    if not name:                     # 无名「标注点」不落点，避免满屏无意义圆点
+        continue
     markers.append({"id": pid, "name": name, "x": round(x, 2), "z": round(z, 2),
                     "y_dem": round(d - EMIN + LIFT, 2),
                     "y_gps": round((g - BIAS) - EMIN + LIFT, 2),
@@ -194,9 +220,23 @@ else:
     specs = [("起点" if full else "进入建模区", i0),
              ("终点" if full else "离开建模区", i1)]
 endpoints = []
+
+
+def bj_hm(iso):
+    """gx:Track 的 when 是 UTC；两步路记录名用的是本地时间，这里统一显示北京时间 HH:MM。"""
+    if not iso:
+        return ""
+    try:
+        from datetime import datetime, timedelta
+        return (datetime.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S")
+                + timedelta(hours=8)).strftime("%H:%M")
+    except Exception:
+        return iso[11:16]
+
+
 for lab, i in specs:
     p = point(i)
-    text = lab + (" " + whens[i][11:16] + "Z" if whens[i] else "")
+    text = lab + (" " + bj_hm(whens[i]) if whens[i] else "")
     endpoints.append({"label": text, "x": p[0], "z": p[3],
                       "y_dem": p[1], "y_gps": p[2], "time": whens[i],
                       "lon": p[4], "lat": p[5]})
@@ -234,7 +274,7 @@ meta = {
     "seg_ranges": [list(s) for s in segs],
     "length_km": round(length_all / 1000, 2), "inside_km": round(length_in / 1000, 2),
     "ascent_m": round(ascent), "gps_min": round(lo, 1), "gps_max": round(hi, 1),
-    "coord": COORD_NOTE, "corr": CORR_OK, "rmse": RMSE_OK,
+    "coord": COORD_NOTE, "corr": CORR, "rmse": RMSE,
     "corr_gcj": CORR_BAD, "rmse_gcj": RMSE_BAD, "bias": round(BIAS, 2),
     "time_start": whens[0], "time_end": whens[-1],
     "dem": M["dem"], "imagery": M["imagery"], "bbox": box,
@@ -279,6 +319,10 @@ justify-content:space-between;align-items:center}
 .camTitle button{flex:0 0 auto;font-size:10px;padding:2px 6px}
 .camHint{font-size:9px;color:#9aa5b4;line-height:1.35;margin-bottom:3px}
 .camPresets,.camBtns{display:flex;gap:4px;margin:5px 0;align-items:center}
+.camPresets.wrap{flex-wrap:wrap}
+.camPresets.wrap button{flex:1 1 46%}
+.camMini{font-size:10px;color:#8b96a6;white-space:nowrap}
+#growS,#growD{width:46px;font-size:11px;padding:2px 3px;border:1px solid #d6dee9;border-radius:4px}
 .camPresets button,.camBtns button{font-size:10px;padding:4px 2px;white-space:nowrap}
 .camBtns input[type=number]{width:44px;font:10px system-ui;
 border:1px solid #d9e1ec;border-radius:4px;padding:2px 3px}
@@ -338,7 +382,7 @@ font-size:10px;color:#5b6779}
 #aspBox{position:absolute;inset:0;pointer-events:none;z-index:6;display:none}
 #aspFrame{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
 border:1px dashed rgba(255,255,255,.92);
-box-shadow:0 0 0 9999px rgba(18,28,42,.40)}
+box-shadow:0 0 0 9999px rgba(10,17,28,.62)}   /* 框外压暗：画幅裁切后框外不再绘制，深一点更像「取景器」 */
 #camBody.hide{display:none}
 @media (max-height:780px){.camTitle{margin:6px 0 1px;padding-top:5px}
 .camList{max-height:60px}.camGrid{gap:1px 5px}}
@@ -350,7 +394,7 @@ font-size:13px;font-weight:500;color:#243042}
 .trkSub{font-size:11px;color:#8b96a6;margin-bottom:4px}
 .trkDot{display:inline-block;width:9px;height:9px;border-radius:50%;
 background:var(--trk,#ff4d1a);margin-right:5px}
-.lbl{position:absolute;transform:translate(-50%,-100%);pointer-events:none;white-space:nowrap;
+.lbl{position:absolute;transform:translate(-50%,-100%);pointer-events:none;white-space:nowrap;transition:opacity .25s linear;
 background:rgba(255,255,255,.92);border:1px solid var(--trk,#ff8a63);color:#9d3412;font-size:11px;
 padding:2px 6px;border-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,.12)}
 .lbl.end{border-color:#185fa5;color:#185fa5}
@@ -414,6 +458,7 @@ font-size:15px;padding:0;line-height:1}
 .wpBtns button{font-size:10px;padding:4px 3px;white-space:nowrap}
 .lbl.wp{font-weight:500;background:rgba(255,255,255,.95);border-width:1.5px;
 box-shadow:0 2px 7px rgba(0,0,0,.18);font-size:12px}
+.lbl.wp.bold{font-weight:800;letter-spacing:.2px}
 /* 矮窗口：收紧行距，保证新增的「离地 / 自动 / 落影」仍在首屏 */
 @media (max-height:780px){
 .trkTitle{margin:7px 0 3px;padding-top:6px}
@@ -438,7 +483,9 @@ CTRL_HTML = """
 <div class="sep"></div>
 <label class="chk"><input type="checkbox" id="showTrk" checked>显示徒步轨迹</label>
 <label class="chk"><input type="checkbox" id="gpsMode">用 KML 记录高程</label>
-<label class="chk"><input type="checkbox" id="showMk" checked>标注点 / 起终点</label>
+<label class="chk"><input type="checkbox" id="showEnds" checked>起终点标记</label>
+<label class="chk"><input type="checkbox" id="showMk" checked>标注点</label>
+<label class="chk" title="默认关闭：被山体挡住的标签自动隐藏。低角度掠视时远近标签不会挤成一团；要看全貌再打开"><input type="checkbox" id="wpOcc">标签透视（被山挡也显示）</label>
 <label class="chk" title="低角度侧视时开启会把轨迹强行画在山体前面，看起来像腾空；建议保持关闭"><input type="checkbox" id="xray">轨迹穿透显示（看全貌）</label>
 <div class="sep"></div>
 <div class="wpTitle">途径点（<span id="wpCount">0 个</span>）</div>
@@ -451,6 +498,7 @@ CTRL_HTML = """
 <div class="wpList" id="wpList"></div>
 <div class="wpFoot">
   <label class="chk"><input type="checkbox" id="wpLbl" checked>名称标签</label>
+  <label class="chk" title="标签文字加粗，远看或压缩后更清楚"><input type="checkbox" id="wpBold">加粗</label>
   <input type="range" id="wpSize" min="4" max="30" step="1" value="12">
   <span id="wpSizeVal">12 m</span>
 </div>
@@ -470,6 +518,24 @@ CAM_HTML = """
   <button id="camHome" title="恢复默认等距沙盘全景">等距全景</button>
   <button id="camLow" title="低角度侧视，用于检查轨迹贴地与遮挡">低角侧视</button>
   <button id="camOrbit" title="生成绕行一周并逐步推近的分镜">环绕推近</button>
+</div>
+<div class="camPresets wrap" id="camTplRow1">
+  <button id="camTour" title="依次飞到每个途径点做特写，最后拉远定格全局">途径点巡礼</button>
+  <button id="camFollow" title="相机贴着轨迹前进方向低空飞行，走完全程">沿线跟拍</button>
+  <button id="camSpin" title="匀速绕模型一圈，首尾可无缝衔接">环绕展示</button>
+  <button id="camRide" title="机位贴近地面随坡度升降，强调爬升段">高程跟随</button>
+</div>
+<div class="camPresets wrap" id="camTplRow2">
+  <button id="camDive" title="从高空俯冲到起点，转为低角度">俯冲进场</button>
+  <button id="camPull" title="从终点低角度拉升到全局">拉升退场</button>
+  <button id="camTop" title="正上方北朝上，平面地图感，适合配字幕开场">俯视平面</button>
+  <button id="camPoi" title="绕离当前视角最近的途径点小半径盘旋">单点环绕</button>
+</div>
+<div class="camPresets wrap">
+  <label class="chk" title="轨迹从起点逐段长出（渲染成片也会带上）"><input type="checkbox" id="growOn">轨迹生长</label>
+  <span class="camMini">起</span><input type="number" id="growS" min="0" max="59" step="0.1" value="0">
+  <span class="camMini">秒 用时</span><input type="number" id="growD" min="0.2" max="30" step="0.1" value="4">
+  <span class="camMini">秒</span>
 </div>
 <div class="camPlayBar">
   <button id="camPlayBtn" title="按分镜时间轴 1× 实时播放镜头预览（只在页面预览，不出帧）">▶ 播放预览</button>
@@ -512,6 +578,362 @@ CAM_HTML = """
 </div>
 """
 
+# ---------- 网页直出视频：WebCodecs 编码 + mp4-muxer 封装，不依赖 Node / ffmpeg ----------
+EXP_CSS = """
+/* 网页直出 MP4：控制面板里一行按钮 + 一个进度遮罩 */
+.expHead{display:flex;justify-content:space-between;align-items:baseline;
+font-size:12px;font-weight:500;color:#243042;margin:0 0 2px}
+.expHead span{font-size:9px;font-weight:400;color:#9aa5b4}
+.expBar{display:flex;gap:4px;align-items:center;margin:5px 0}
+.expBar>button{flex:1 1 auto;min-width:0;font-size:10px;padding:5px 3px;white-space:nowrap}
+.expBar select{font:10px system-ui,"Microsoft YaHei",sans-serif;color:#243042;
+background:#fff;border:1px solid #d9e1ec;border-radius:4px;padding:2px 1px;flex:0 0 auto}
+#expHint{margin:0 0 3px}
+body.exporting .lbl{display:none!important}   /* 导出时标签由 canvas 自己画，避免重影 */
+#expMask{position:fixed;inset:0;z-index:60;display:none;align-items:center;
+justify-content:center;background:rgba(16,26,40,.5)}
+body.exporting #expMask{display:flex}
+.expCard{width:342px;background:#fff;border-radius:12px;padding:16px 18px;
+box-shadow:0 14px 44px rgba(20,35,60,.3)}
+.expCard h3{margin:0 0 10px;font-size:14px;font-weight:500;color:#243042}
+.expTrack{height:6px;background:#eef2f8;border-radius:3px;overflow:hidden}
+.expTrack i{display:block;height:100%;width:0;border-radius:3px;
+background:linear-gradient(90deg,#2681ff,#185fa5);transition:width .12s linear}
+.expStat{font:11px/1.65 ui-monospace,Consolas,monospace;color:#5b6779;
+margin-top:8px;min-height:34px;word-break:break-all}
+.expActs{display:flex;gap:6px;margin-top:10px}
+.expActs button,.expActs a{flex:1;text-align:center;font:12px system-ui,"Microsoft YaHei",sans-serif;
+padding:7px 8px;border-radius:6px;border:1px solid #cddffb;background:#eef4ff;
+color:#185fa5;cursor:pointer;text-decoration:none}
+.expActs a{background:#185fa5;color:#fff;border-color:#185fa5;font-weight:500}
+.expActs a[hidden]{display:none}
+.expNote{font-size:9px;color:#9aa5b4;line-height:1.45;margin-top:8px}
+"""
+
+EXP_HTML = """
+<div class="expHead">视频导出<span>网页直出 MP4 · 不经渲染脚本</span></div>
+<div class="expBar">
+  <button id="expVideo" title="在本机浏览器里直接编码 MP4（GPU 硬件编码，不上传）">⬇ 导出 MP4</button>
+  <select id="expFps" title="帧率"><option value="24">24fps</option><option value="30">30fps</option><option value="60">60fps</option></select>
+  <select id="expRes" title="清晰度（短边 720 / 1080 / 1440 / 2160）"><option value="720">720p</option><option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">4K</option></select>
+</div>
+<div class="camHint" id="expHint">—</div>
+<div class="sep"></div>
+<div id="expMask"><div class="expCard">
+  <h3 id="expTitle">正在导出 MP4</h3>
+  <div class="expTrack"><i id="expFill"></i></div>
+  <div class="expStat" id="expStat"></div>
+  <div class="expActs"><button id="expCancel">取消</button><a id="expSave" download hidden>下载 MP4</a></div>
+  <div class="expNote">编码在本机 GPU 上完成，画面不外传。导出时保持本标签页在前台，别切走或最小化。</div>
+</div></div>
+"""
+
+EXP_JS = r"""
+/* ---------- 网页直出 MP4：WebCodecs(H.264) + mp4-muxer ----------
+   逐帧驱动与 video.html 的 __setFrame 同源（shotAt/applyCam/__applyGrowAt），
+   所以页面上预览到的构图 = 导出的构图；标签由 canvas 2D 按同一套避让规则重画，
+   不依赖 DOM 叠层，导出分辨率与窗口大小无关。 */
+const EKEY='terrain_hd_export_v1';
+const EXP={fps:60,res:1080};
+try{
+  const sv=JSON.parse(localStorage.getItem(EKEY)||'null');
+  if(sv){
+    if([24,30,60].indexOf(+sv.fps)>=0)EXP.fps=+sv.fps;
+    if([720,1080,1440,2160].indexOf(+sv.res)>=0)EXP.res=+sv.res;
+  }
+}catch(e){}
+function expSaveCfg(){try{localStorage.setItem(EKEY,JSON.stringify(EXP));}catch(e){}}
+function expAr(){return ASP==='916'?9/16:(ASP==='169'?16/9:innerWidth/Math.max(1,innerHeight));}
+function expSize(){
+  const ar=expAr(), s=EXP.res;
+  let W,H;
+  if(ar>=1){W=Math.round(s*ar);H=s;}else{W=s;H=Math.round(s/ar);}
+  return {W:W+(W&1),H:H+(H&1)};          /* H.264 要求偶数边长 */
+}
+function expTotal(){return Math.max(1,Math.round(DUR*EXP.fps));}
+function expHintText(){
+  if(!el('expHint'))return;
+  const z=expSize();
+  el('expHint').textContent=(+DUR).toFixed(1)+' s · '+expTotal()+' 帧 · '+
+    z.W+'×'+z.H+' · '+EXP.fps+' fps';
+}
+window.__expHint=expHintText;      /* syncCamUI 在初始化阶段会调，先挂窗口避免 TDZ */
+let EXPING=false, EXPCANCEL=false, XR=null;   /* XR：导出专用离屏渲染器 */
+function expOpen(title,stat){
+  el('expTitle').textContent=title||'正在导出 MP4';
+  el('expStat').textContent=stat||'';
+  el('expFill').style.width='0%';
+  el('expSave').hidden=true;
+  el('expCancel').textContent='取消';
+  document.body.classList.add('exporting');
+}
+function expClose(){document.body.classList.remove('exporting');}
+function expRoundRect(c,x,y,w,h,r){
+  if(c.roundRect){c.beginPath();c.roundRect(x,y,w,h,r);return;}
+  c.beginPath();
+  c.moveTo(x+r,y);c.lineTo(x+w-r,y);c.quadraticCurveTo(x+w,y,x+w,y+r);
+  c.lineTo(x+w,y+h-r);c.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  c.lineTo(x+r,y+h);c.quadraticCurveTo(x,y+h,x,y+h-r);
+  c.lineTo(x,y+r);c.quadraticCurveTo(x,y,x+r,y);
+  c.closePath();
+}
+/* 标签重画：可见性 / 遮挡 / 生长 / 撞车避让规则与 updateLabels 保持一致，
+   区别只是投影基准换成导出分辨率（W,H），字号按高度等比放大 */
+function expDrawLabels(ctx,W,H,scl,lstyle){
+  if(!el('showTrk').checked)return;
+  const sy=group.scale.y||1, cand=[];
+  for(const o of labels){
+    const w=o.p.clone();w.y*=sy;
+    const v=w.clone().project(camera);
+    if(v.z>=1)continue;
+    const isWp=o.kind==='wp';
+    if(isWp){if(!WP.label)continue;}
+    else if(o.el.classList.contains('end')? !el('showEnds').checked
+                                         : !el('showMk').checked)continue;
+    if(!WP.occ&&labelBlocked(w))continue;
+    if(GRW.on&&o.t!==null&&o.t!==undefined&&GROWP<0.999&&o.t>GROWP+0.004)continue;
+    const st=lstyle.get(o);
+    if(!st||!st.text)continue;
+    cand.push({st:st,v:v,d:w.distanceToSquared(camera.position)});
+  }
+  if(!cand.length)return;
+  cand.sort(function(a,b){return a.d-b.d;});
+  const placed=[];
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  for(const c of cand){
+    const st=c.st, f=st.fs*scl;
+    ctx.font=(st.bold?'800 ':'500 ')+f+'px system-ui,"Microsoft YaHei",sans-serif';
+    const bw=ctx.measureText(st.text).width+12*scl+2*st.bw*scl;
+    const bh=f*1.65+6*scl+2*st.bw*scl;
+    const x=(c.v.x*.5+.5)*W;
+    let y=(-c.v.y*.5+.5)*H-6*scl;
+    if(x<-60*scl||x>W+60*scl||y<-60*scl||y>H+60*scl)continue;
+    const hw=bw/2+8*scl;
+    for(let k=0;k<2;k++){
+      if(!placed.some(function(p){return Math.abs(p.x-x)<p.hw+hw&&Math.abs(p.y-y)<17*scl;}))break;
+      y-=20*scl;
+    }
+    if(placed.some(function(p){return Math.abs(p.x-x)<p.hw+hw&&Math.abs(p.y-y)<17*scl;}))continue;
+    placed.push({x:x,y:y,hw:hw});
+    const left=x-bw/2, top=y-bh;
+    ctx.save();
+    ctx.shadowColor='rgba(0,0,0,.12)';ctx.shadowBlur=4*scl;ctx.shadowOffsetY=scl;
+    ctx.fillStyle='rgba(255,255,255,.93)';
+    expRoundRect(ctx,left,top,bw,bh,4*scl);ctx.fill();
+    ctx.restore();
+    ctx.strokeStyle=st.border;ctx.lineWidth=Math.max(1,st.bw*scl);
+    expRoundRect(ctx,left,top,bw,bh,4*scl);ctx.stroke();
+    ctx.fillStyle=st.color;
+    ctx.fillText(st.text,x,top+bh/2);
+  }
+}
+async function expRun(opt){
+  opt=opt||{};
+  if(EXPING)return {ok:false,err:'busy'};
+  const fps=opt.fps||EXP.fps;
+  const z=opt.W?{W:opt.W,H:opt.H}:expSize();
+  const total=opt.frames||Math.max(1,Math.round((opt.dur||DUR)*fps));
+  const bitrate=opt.bitrate||Math.min(48e6,Math.round(z.W*z.H*fps*0.10));
+  EXPING=true;EXPCANCEL=false;
+  expOpen('正在导出 MP4','检测本机 H.264 编码器…');
+  stopPlay();
+  const t0=performance.now();
+  const ASPECT=camera.aspect;
+  let enc=null, muxer=null, done=0;
+  try{
+    if(!('VideoEncoder' in window))
+      throw new Error('当前浏览器不支持 WebCodecs，请用 Chrome / Edge 94+ 打开');
+    /* 1) 挑一个本机支持的 H.264 profile/level（4K 需要更高 level） */
+    let codec=null;
+    /* 从低 level 往高试：拿到能满足当前分辨率/帧率的最低档，
+       兼容性最好（4K60 才会落到 5.1/5.2） */
+    for(const c of ['avc1.640028','avc1.640029','avc1.64002a','avc1.640032',
+                    'avc1.640033','avc1.640034',
+                    'avc1.4d0028','avc1.4d002a','avc1.4d0033','avc1.42E01E']){
+      let r=null;
+      try{r=await VideoEncoder.isConfigSupported(
+        {codec:c,width:z.W,height:z.H,framerate:fps,bitrate:bitrate});}catch(e){}
+      if(r&&r.supported){codec=c;break;}
+    }
+    if(!codec)throw new Error('本机没有可用的 H.264 编码器（'+z.W+'×'+z.H+' @'+fps+'fps）');
+    /* 2) 封装器：http 页面从 vendor 动态加载；单文件版用内联进 __THREE_BUNDLE__ 的那份 */
+    let Mux=null;
+    if(window.__THREE_BUNDLE__&&window.__THREE_BUNDLE__.Muxer)Mux=window.__THREE_BUNDLE__;
+    else{
+      try{Mux=await import('./vendor/mp4-muxer.js');}
+      catch(e){throw new Error('读不到 vendor/mp4-muxer.js（单文件版请用 http:// 打开）');}
+    }
+    muxer=new Mux.Muxer({target:new Mux.ArrayBufferTarget(),
+      video:{codec:'avc',width:z.W,height:z.H,framerate:fps},
+      fastStart:'in-memory'});          /* moov 前置，微信/手机播放器都能直接播 */
+    let encErr=null;
+    enc=new VideoEncoder({
+      output:function(chunk,meta){try{muxer.addVideoChunk(chunk,meta);}catch(e){encErr=e;}},
+      error:function(e){encErr=e;}});
+    enc.configure({codec:codec,width:z.W,height:z.H,framerate:fps,bitrate:bitrate,
+      latencyMode:'realtime',avc:{format:'avc'}});
+    /* 编码器背压：硬件编码器队列深了会卡住整条管线（1080p 长片实测），
+       所以每帧都等队列降到 3 以下再继续；超过 15 s 不动就报错，避免假死 */
+    async function expDrain(){
+      const t0=performance.now();
+      while(enc.encodeQueueSize>3){
+        await new Promise(function(r){setTimeout(r,4);});
+        if(performance.now()-t0>15000)
+          throw new Error('编码器无响应（队列 '+enc.encodeQueueSize+
+                          '），可降到 720p 或 30fps 再试');
+      }
+    }
+    /* 3) 单独开一个离屏渲染器出帧：不挂到 DOM，合成器完全不参与，
+          避免「主画布被合成器反复缩放 + drawImage 抢 GPU」跑到 ~80 帧假死。
+          主画布保持原样，导出结束后不用还原尺寸。 */
+    if(!XR){
+      XR=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true,alpha:false});
+      XR.outputColorSpace=renderer.outputColorSpace;
+      XR.toneMapping=renderer.toneMapping;
+      XR.toneMappingExposure=renderer.toneMappingExposure;
+    }
+    XR.setPixelRatio(1);
+    XR.setSize(z.W,z.H,false);
+    camera.aspect=z.W/z.H;camera.updateProjectionMatrix();
+    const comp=document.createElement('canvas');
+    comp.width=z.W;comp.height=z.H;
+    const ctx=comp.getContext('2d',{alpha:false});
+    const scl=z.H/1080;
+    /* 标签样式先缓存一份：逐帧 getComputedStyle 太慢 */
+    const lstyle=new Map();
+    for(const o of labels){
+      const cs=getComputedStyle(o.el);
+      lstyle.set(o,{text:o.el.textContent||'',color:cs.color||'#9d3412',
+        border:cs.borderTopColor||'#ff8a63',
+        bold:(parseInt(cs.fontWeight,10)||400)>=600,
+        fs:parseFloat(cs.fontSize)||11,
+        bw:parseFloat(cs.borderTopWidth)||1});
+    }
+    window.__exporting=true;        /* 让 rAF 循环让位，逐帧由这里驱动 */
+    let lastPaint=0, tStart=0;      /* tStart：第一帧之后才算，别把着色器编译算进帧率 */
+    for(let i=0;i<total;i++){
+      if(EXPCANCEL)break;
+      const t=i/fps;
+      const s=shotAt(SHOTS,t);if(s)applyCam(s);
+      if(window.__applyGrowAt)window.__applyGrowAt(t);
+      const p0=performance.now();
+      XR.render(scene,camera);
+      /* 每帧跟 GPU 同步一次：drawImage/VideoFrame 在 Chrome 里是异步的，
+         不同步就会把几百帧的 1080p 纹理全排进队列（>1 GB），
+         最后 flush 时主线程被拖死（实测 200 帧后假死） */
+      XR.getContext().finish();
+      const p1=performance.now();
+      ctx.drawImage(XR.domElement,0,0,z.W,z.H);
+      const p2=performance.now();
+      expDrawLabels(ctx,z.W,z.H,scl,lstyle);
+      const p3=performance.now();
+      const vf=new VideoFrame(comp,{timestamp:Math.round(i*1e6/fps),
+        duration:Math.round(1e6/fps)});
+      const p4=performance.now();
+      enc.encode(vf,{keyFrame:(i%(fps*2))===0});
+      vf.close();
+      if(opt.debug)console.log('[exp] i='+i+' R='+(p1-p0).toFixed(0)+
+        ' D='+(p2-p1).toFixed(0)+' L='+(p3-p2).toFixed(0)+
+        ' V='+(p4-p3).toFixed(0)+' E='+(performance.now()-p4).toFixed(0)+
+        ' q='+enc.encodeQueueSize);
+      done=i+1;
+      if(!tStart)tStart=performance.now();
+      if(encErr)throw encErr;
+      await expDrain();
+      /* 每 24 帧彻底排空一次：Chrome 的 encodeQueueSize 有时不反映真实占用，
+         积压的 VideoFrame 会把 GPU/帧池占满，表现为 1080p 长片跑到 ~80 帧假死 */
+      if(i%24===23)await enc.flush();
+      const now=performance.now();
+      if(now-lastPaint>120||i===total-1){
+        lastPaint=now;
+        const per=(now-tStart)/Math.max(1,done-1);
+        const left=Math.max(0,(total-done)*per)/1000;
+        el('expFill').style.width=(100*done/total).toFixed(1)+'%';
+        el('expStat').textContent=done+' / '+total+' 帧 · '+
+          (100*done/total).toFixed(0)+'% · '+(1000/per).toFixed(1)+' 帧/秒 · 剩余 '+
+          (left<10?left.toFixed(1):left.toFixed(0))+' s';
+        if(opt.debug)console.log('[exp] '+done+'/'+total+' q='+enc.encodeQueueSize+
+          ' t='+Math.round(now-t0)+'ms');
+        await new Promise(function(r){setTimeout(r,0);});
+      }
+    }
+    if(EXPCANCEL){
+      try{enc.close();}catch(e){}
+      enc=null;
+      throw {cancelled:true};
+    }
+    el('expStat').textContent='正在封装 MP4…';
+    if(opt.debug)console.log('[exp] flush start q='+enc.encodeQueueSize);
+    await enc.flush();
+    if(opt.debug)console.log('[exp] flush done');
+    enc.close();enc=null;
+    muxer.finalize();
+    if(opt.debug)console.log('[exp] muxed '+(muxer.target.buffer.byteLength/1048576).toFixed(1)+'MB');
+    const blob=new Blob([muxer.target.buffer],{type:'video/mp4'});
+    const ms=performance.now()-t0;
+    const name='terrain_'+z.W+'x'+z.H+'_'+fps+'fps.mp4';
+    const url=URL.createObjectURL(blob);
+    const a=el('expSave');
+    a.href=url;a.download=name;a.hidden=false;
+    a.textContent='下载 MP4（'+(blob.size/1048576).toFixed(1)+' MB）';
+    el('expTitle').textContent='导出完成';
+    el('expStat').textContent=name+' · '+done+' 帧 · '+
+      (blob.size/1048576).toFixed(1)+' MB · 用时 '+(ms/1000).toFixed(1)+' s · '+codec;
+    el('expCancel').textContent='关闭';
+    el('expFill').style.width='100%';
+    if(!opt.noDownload){try{a.click();}catch(e){}}
+    const out={ok:true,bytes:blob.size,frames:done,codec:codec,ms:Math.round(ms),
+               w:z.W,h:z.H};
+    if(opt.dump){
+      out.b64=await new Promise(function(res){
+        const fr=new FileReader();
+        fr.onload=function(){res(String(fr.result).split(',')[1]||'');};
+        fr.onerror=function(){res('');};
+        fr.readAsDataURL(blob);
+      });
+    }
+    return out;
+  }catch(e){
+    if(e&&e.cancelled){
+      el('expTitle').textContent='已取消导出';
+      el('expStat').textContent='没有生成文件。';
+      el('expCancel').textContent='关闭';
+      el('expFill').style.width='0%';
+      return {ok:false,err:'cancel'};
+    }
+    const msg=(e&&e.message)||String(e);
+    el('expTitle').textContent='导出失败';
+    el('expStat').textContent=msg;
+    el('expCancel').textContent='关闭';
+    console.error('[export]',e);
+    return {ok:false,err:msg};
+  }finally{
+    EXPING=false;
+    window.__exporting=false;
+    try{if(enc&&enc.state!=='closed')enc.close();}catch(e){}
+    if(XR){try{XR.dispose();XR.forceContextLoss();}catch(e){} XR=null;}  /* 释放离屏上下文 */
+    camera.aspect=ASPECT;camera.updateProjectionMatrix();
+    try{previewAt(PLAY,true);updateLabels();renderer.render(scene,camera);}catch(e){}
+    expHintText();
+  }
+}
+window.__exportRun=expRun;                /* 自检 / 自动化用 */
+window.__exportProbe=function(){
+  return {webcodecs:('VideoEncoder' in window),fps:EXP.fps,res:EXP.res,
+          size:expSize(),frames:expTotal(),dur:DUR,asp:ASP};
+};
+el('expFps').value=String(EXP.fps);
+el('expRes').value=String(EXP.res);
+el('expFps').onchange=function(){EXP.fps=+el('expFps').value;expSaveCfg();expHintText();};
+el('expRes').onchange=function(){EXP.res=+el('expRes').value;expSaveCfg();expHintText();};
+el('expVideo').onclick=function(){expRun();};
+el('expCancel').onclick=function(){
+  if(EXPING){EXPCANCEL=true;el('expStat').textContent='正在停止…';return;}
+  expClose();
+};
+expHintText();
+"""
+
 STYLE_HTML = """
 <div class="trkStyle">轨迹样式（可调 · 自动记住）</div>
 <div class="trkHint">自动按坡度取最小离地 · 取消「自动」可手调 · 穿透显示建议关闭</div>
@@ -552,6 +974,8 @@ CAM_CORE = r"""
 const CKEY='terrain_hd_camera_v1', TOP=location.search.indexOf('top')>=0;
 const CUNIT={az:'°',el:'°',r:'m',tx:'m',ty:'m',tz:'m',fov:'°'};
 const CAMFIELDS=['az','el','r','tx','ty','tz','fov'];
+/* az 可以累积到 0–360 之外（相邻帧差 >180° 时用它控制转向，机位不变），显示时归一化 */
+const azN=a=>{const v=(((+a)%360)+360)%360;return Math.abs(v-360)<0.05?0:v;};
 function camSmooth(x){return x*x*(3-2*x);}
 function camLerp(a,b,f){return a+(b-a)*f;}
 function shotAt(shots,t){
@@ -559,7 +983,11 @@ function shotAt(shots,t){
   let k=0;
   while(k<shots.length-2 && t>shots[k+1].t)k++;
   const A=shots[k],B=shots[Math.min(k+1,shots.length-1)];
-  const f=camSmooth(Math.max(0,Math.min(1,(t-A.t)/Math.max(1e-6,B.t-A.t))));
+  const raw=Math.max(0,Math.min(1,(t-A.t)/Math.max(1e-6,B.t-A.t)));
+  /* sm:0 = 线性推进（模板自动生成的密集关键帧用）。
+     smoothstep 在每一段首尾速度都归零，16 段的跟拍会变成「走 0.9 s 停一下」的顿挫；
+     手调分镜不带 sm，仍走缓入缓出。 */
+  const f=A.sm===0?raw:camSmooth(raw);
   const o={};
   for(const key of CAMFIELDS)o[key]=camLerp(A[key],B[key],f);
   return o;
@@ -571,6 +999,8 @@ function applyCam(c){
   camera.position.set(t.x+r*Math.cos(e)*Math.sin(a),
                       t.y+r*Math.sin(e),
                       t.z+r*Math.cos(e)*Math.cos(a));
+  /* 接近正上方时用「-z＝北」作上方向，否则 up 与视线几乎平行，画面会随机歪 */
+  if(e>1.551){camera.up.set(0,0,-1);}
   if(Math.abs(camera.fov-c.fov)>1e-3){camera.fov=c.fov;camera.updateProjectionMatrix();}
   controls.target.copy(t);
   camera.lookAt(t);
@@ -634,6 +1064,15 @@ if(QP.has('shots'))SHOTS=unpackShots(QP.get('shots'));
 if(QP.has('dur')){const n=parseFloat(QP.get('dur'));
   if(isFinite(n))DUR=Math.min(60,Math.max(3,n));}
 if(QP.has('asp')&&['0','916','169'].indexOf(QP.get('asp'))>=0)ASP=QP.get('asp');
+/* 垂直夸张 ex=（0.5–4）与起终点开关 ends=0/1 也进参数串，
+   保证逐帧渲染出来的坡度和页面上一模一样 */
+if(QP.has('ex')){
+  const n=parseFloat(QP.get('ex'));
+  if(isFinite(n)){const v=Math.min(4,Math.max(0.5,n));
+    group.scale.y=v; el('ex').value=v; el('exVal').textContent=v.toFixed(1)+'×'; syncBase();}
+}
+if(QP.has('ends'))el('showEnds').checked=QP.get('ends')!=='0';
+if(QP.has('mk'))el('showMk').checked=QP.get('mk')!=='0';   /* 标注点（KML 航点）开关 */
 """
 
 CAM_UI = r"""
@@ -652,23 +1091,45 @@ const CAMROWS=[['camAz','az'],['camEl','el'],['camR','r'],['camTx','tx'],
 function camValues(){
   for(const [id,k] of CAMROWS)el(id+'V').textContent=(+CAM[k]).toFixed(0)+CUNIT[k];
 }
+/* 画幅裁切：切 9:16 / 16:9 时不能只画个虚框 —— 原来相机仍是窗口比例，
+   框里看到的是 16:9 取景被遮掉两侧，模型就「超出屏幕」，而导出又是真 9:16，预览与成片对不上。
+   现在把渲染视口也收进框内、camera.aspect 同步，框内像素 = 导出的那一帧。 */
+let CUTF=null;                 /* {x,y,w,h} 渲染视口（GL 坐标，原点左下） */
 function applyAspect(){
-  const box=el('aspBox');
-  if(ASP==='0'){box.style.display='none';return;}
+  const box=el('aspBox'), frame=el('aspFrame');
+  if((ASP!=='169'&&ASP!=='916')||window.__frameMode){
+    /* 自由比例 / 视频逐帧页：整窗渲染（视频页窗口本身就是成片尺寸，再裁一圈会带黑边） */
+    box.style.display='none';
+    CUTF=null;
+    renderer.setScissorTest(false);
+    renderer.setViewport(0,0,innerWidth,innerHeight);
+    camera.aspect=innerWidth/Math.max(1,innerHeight);
+    camera.updateProjectionMatrix();
+    return;
+  }
   box.style.display='block';
   const aw=ASP==='916'?9:16, ah=ASP==='916'?16:9;
   const mw=innerWidth-32,mh=innerHeight-32;
   let w=Math.min(mw,mh*aw/ah), h=w*ah/aw;
   if(h>mh){h=mh;w=h*aw/ah;}
-  el('aspFrame').style.width=Math.round(w)+'px';
-  el('aspFrame').style.height=Math.round(h)+'px';
+  w=Math.round(w);h=Math.round(h);
+  frame.style.width=w+'px';frame.style.height=h+'px';
+  /* CUTF 用 CSS 语义（y = 距顶），标签定位和视口两处都要用；
+     WebGL 的 y 原点在左下，setViewport 时再换算 */
+  const x=Math.round((innerWidth-w)/2), ty=Math.round((innerHeight-h)/2);
+  CUTF={x:x,y:ty,w:w,h:h};
+  camera.aspect=w/h;
+  camera.updateProjectionMatrix();
+  renderer.setScissorTest(true);
+  renderer.setViewport(x,innerHeight-ty-h,w,h);
+  renderer.setScissor(x,innerHeight-ty-h,w,h);
   document.querySelectorAll('.camAsp button').forEach(b=>
     b.classList.toggle('on',b.dataset.a===ASP));
 }
 function previewAt(t,keepCam){
   const s=shotAt(SHOTS,t);
   el('camPlayV').textContent = s
-    ? '播放头 '+(+t).toFixed(2)+' s · az '+s.az.toFixed(0)+'° el '+s.el.toFixed(0)+'° r '+s.r.toFixed(0)+' m'
+    ? '播放头 '+(+t).toFixed(2)+' s · az '+azN(s.az).toFixed(0)+'° el '+s.el.toFixed(0)+'° r '+s.r.toFixed(0)+' m'
     : '播放头 '+(+t).toFixed(2)+' s · 无关键帧';
   if(s&&!TOP&&!keepCam)applyCam(s);   /* keepCam：只刷文字，不抢用户刚拖好的视角 */
 }
@@ -732,7 +1193,7 @@ function renderShotList(){
   box.innerHTML=SHOTS.map((s,i)=>
     '<div class="camRow"><input type="number" class="camT" data-i="'+i+
     '" min="0" max="60" step="0.05" value="'+(+s.t).toFixed(2)+
-    '"><span class="camGo" data-i="'+i+'" title="跳到这一帧预览">az '+s.az.toFixed(0)+
+    '"><span class="camGo" data-i="'+i+'" title="跳到这一帧预览">az '+azN(s.az).toFixed(0)+
     '° el '+s.el.toFixed(0)+'° r '+s.r.toFixed(0)+
     '</span><button class="camOvr" data-i="'+i+'" title="用当前画面覆盖这一帧">↻</button>'+
     '<button class="camDel" data-i="'+i+'" title="删除">×</button></div>').join('');
@@ -763,6 +1224,7 @@ function syncCamUI(){
   el('camDur').value=DUR;
   el('camPlay').max=DUR;el('camPlay').value=PLAY;
   renderShotList();applyAspect();refreshParam();playUi();saveCam();
+  if(window.__expHint)window.__expHint();      /* 时长 / 分镜变了，导出提示跟着更新 */
 }
 function setCam(c){
   CAM=c;
@@ -790,6 +1252,241 @@ el('camOrbit').onclick=()=>{
   }
   SHOTS=arr;PLAY=0;syncCamUI();previewAt(0);
 };
+/* ---------- 运镜模板：由轨迹 / 途径点自动生成分镜 ---------- */
+function camAtPos(pos,tgt,fov){
+  const d=pos.clone().sub(tgt), r=d.length()||1;
+  const el=Math.asin(Math.max(-1,Math.min(1,d.y/r)))*180/Math.PI;
+  return {az:+(((Math.atan2(d.x,d.z)*180/Math.PI)+360)%360).toFixed(1),
+          el:+Math.max(3,Math.min(89.5,el)).toFixed(1), r:+r.toFixed(1),
+          tx:+tgt.x.toFixed(1), ty:+tgt.y.toFixed(1), tz:+tgt.z.toFixed(1),
+          fov:fov||58};
+}
+/* 取景比例：必须和「画幅」一致，不能用窗口比例。
+   画幅选 9:16 / 16:9 时预览框与导出的 camera.aspect 都是 9/16 或 16/9，
+   若这里按窗口比例求距离，竖屏导出就会横向出画（反之横屏留白）。 */
+function fitAr(){
+  return ASP==='916'?9/16:(ASP==='169'?16/9:innerWidth/Math.max(1,innerHeight));
+}
+/* 二分求「刚好装下」的机位距离：把给定点集投影到临时相机，全部落进 margin 内 */
+function fitR(o){
+  const t=new THREE.Vector3(o.tx,o.ty,o.tz);
+  const cam=new THREE.PerspectiveCamera(o.fov||58,fitAr(),1,300000);
+  const a=o.az*Math.PI/180, e=o.el*Math.PI/180, m=o.margin||0.9;
+  /* 顶视时 applyCam 会换 up=(0,0,-1)；临时相机不跟着换，
+     判定的 roll 就和实际画面差 90°，长条形模型会「算着装下了、实际超框」 */
+  if(e>1.551)cam.up.set(0,0,-1);
+  let lo=120, hi=60000, best=hi;
+  for(let i=0;i<26;i++){
+    const r=(lo+hi)/2;
+    cam.position.set(t.x+r*Math.cos(e)*Math.sin(a), t.y+r*Math.sin(e), t.z+r*Math.cos(e)*Math.cos(a));
+    cam.lookAt(t); cam.updateMatrixWorld(); cam.updateProjectionMatrix();
+    let ok=true;
+    for(const p of o.pts){
+      const v=p.clone().project(cam);
+      if(Math.abs(v.x)>m||Math.abs(v.y)>m||v.z>1){ok=false;break;}
+    }
+    if(ok){best=r;hi=r;}else lo=r;
+  }
+  return Math.round(best);
+}
+/* 环绕类模板专用：模型长宽不等时每个方位角需要的距离不同。
+   只按起始方位求一次 r，转到「宽边」就会出画（camPoi 原按 az=90 窄边算，转到 60° 差 37%）。
+   取一圈 n 个方位的最大值，保证全程装得下。 */
+function orbitR(o){
+  let r=0, n=o.k||4;
+  for(let i=0;i<n;i++){
+    const rr=fitR({az:o.az+i*360/n,el:o.el,tx:o.tx,ty:o.ty,tz:o.tz,
+                   fov:o.fov,pts:o.pts,margin:o.margin});
+    if(rr>r)r=rr;
+  }
+  return r;
+}
+function modelPts(){
+  const sy=group.scale.y, hw=M.width_m/2, hh=M.height_m/2;
+  const top=Math.max(80,(MAX-MIN)*sy);
+  const out=[];
+  for(const x of [-hw,hw])for(const z of [-hh,hh])for(const y of [0,top])
+    out.push(new THREE.Vector3(x,y,z));
+  return out;
+}
+function nearPts(x,z,y,half,h){
+  const out=[];
+  for(const dx of [-half,half])for(const dz of [-half,half])
+    for(const dy of [-h*0.4,h])out.push(new THREE.Vector3(x+dx,y+dy,z+dz));
+  return out;
+}
+function trkYHere(p){return trackY(p,el('gpsMode').checked?2:1);}
+/* 环线起点=终点：末位途径点（≥0.98）按起点处理，生长一开始就出现，
+   否则「起终点山顶人家」要等整圈画完才冒出来 */
+function growT(t){
+  return (t===null||t===undefined)?t:(t>=0.98?0:t);
+}
+/* 标注点不在轨迹上带 t，按最近的采样点折算里程比例，生长动画里跟着一起出现 */
+function nearestT(x,z){
+  let bt=0, bd=1e18;
+  for(let i=0;i<=240;i++){
+    const p=sampleAt(i/240).p;
+    const d=(p[0]-x)*(p[0]-x)+(p[3]-z)*(p[3]-z);
+    if(d<bd){bd=d;bt=i/240;}
+  }
+  return bt;
+}
+function globalFit(az,el,m){
+  /* 只按 8 个角点求距离会偏保守：靠近相机的那个底角先顶到画面边界，
+     整块沙盘就显得很小。乘 0.86 让沙盘撑满，代价是最外沿底角轻微出画。 */
+  const r=fitR({az:az,el:el,tx:0,ty:130,tz:0,fov:58,
+                pts:modelPts(),margin:m||0.9});
+  return Math.round(r*0.86);
+}
+/* 完整不裁的全局取景：margin 本身就是「留边比例」，再乘 0.86 会让角点 ndc 到 1.05（出画）。
+   环绕、定格、收尾这类要求「沙盘完整」的镜头必须用这个。 */
+function fitFull(az,el,m){
+  return fitR({az:az,el:el,tx:0,ty:130,tz:0,fov:58,
+               pts:modelPts(),margin:m||0.96});
+}
+function useShots(arr,tip){
+  /* 模板生成的帧一律标 sm:0（线性插值）：帧距 0.8–2.5 s，靠插值本身就连得上，
+     不需要每段再缓入缓出；手调/记录的分镜不带 sm，保持原来的电影感停顿。 */
+  SHOTS=arr.map(function(o){return Object.assign({sm:0},o);})
+           .sort(function(a,b){return a.t-b.t;});
+  DUR=+SHOTS[SHOTS.length-1].t.toFixed(2);
+  PLAY=0; syncCamUI(); previewAt(0);
+  flashRec(tip);
+}
+function followShots(o){
+  const N=o.n||14, arr=[];
+  for(let i=0;i<=N;i++){
+    const f=i/N, p=sampleAt(f).p;
+    /* 切线用「前一点 → 后一点」：只朝前采样在终点会退化成零向量，
+       机位会跑到目标正上方（el≈90°，画面直接朝天） */
+    const pa=sampleAt(Math.max(0,f-0.02)).p, pb=sampleAt(Math.min(1,f+0.02)).p;
+    let dx=pb[0]-pa[0], dz=pb[3]-pa[3];
+    const L=Math.hypot(dx,dz)||1; dx/=L; dz/=L;
+    const y=trkYHere(p);
+    const pos=new THREE.Vector3(p[0]-dx*o.back, y+o.h, p[3]-dz*o.back);
+    const tgt=new THREE.Vector3(p[0]+dx*o.look, y+o.up, p[3]+dz*o.look);
+    arr.push(Object.assign({t:+(o.dur*f).toFixed(2)}, camAtPos(pos,tgt,o.fov||58)));
+  }
+  return arr;
+}
+/* 1 途径点巡礼：每点「远处进→特写停→再飞下一个」，末段拉远定格全局 */
+el('camTour').onclick=function(){
+  const list=WP.list.filter(function(w){return w.on;});
+  if(!list.length){flashRec('先添加途径点，再生成巡礼');return;}
+  const STEP=2.2, arr=[], az0=readCam().az;   /* 从当前实际视角起转，不用面板里的旧值 */
+  let t=0;
+  list.forEach(function(w,i){
+    const p=sampleAt(w.t).p, y=trkYHere(p), fov=58;
+    const az=+((az0+i*18)%360).toFixed(1);
+    const near=function(){return nearPts(p[0],p[3],y,Math.round(DIAG*0.10),Math.round(DIAG*0.07));};
+    /* 远景帧与特写帧各自求距离：特写 el 从 30 降到 22，同一距离会放大画面，
+       原来拿 r1*0.72 顶替，陡坡上的点会顶出画框 */
+    const r1=fitR({az:az,el:30,tx:p[0],ty:y+18,tz:p[3],fov:fov,pts:near(),margin:0.92});
+    const r2=fitR({az:az+10,el:22,tx:p[0],ty:y+12,tz:p[3],fov:fov,pts:near(),margin:0.92});
+    arr.push({t:+t.toFixed(2),az:az,el:30,r:r1,tx:p[0],ty:y+18,tz:p[3],fov:fov});
+    arr.push({t:+(t+STEP*0.62).toFixed(2),az:+(az+10).toFixed(1),el:22,r:r2,tx:p[0],ty:y+12,tz:p[3],fov:fov});
+    arr.push({t:+(t+STEP).toFixed(2),az:+(az+10).toFixed(1),el:22,r:r2,tx:p[0],ty:y+12,tz:p[3],fov:fov});
+    t+=STEP;
+  });
+  /* 定格帧的 el 必须和求距离时一致：原来按 30° 求 r、却按 34° 拍，沙盘会小一圈；
+     再用 fitFull 而不是 globalFit 的 0.86，收尾时沙盘完整不出框 */
+  const R=fitFull(138,34,0.96);
+  arr.push({t:+(t+1.6).toFixed(2),az:138,el:34,r:R,tx:0,ty:130,tz:0,fov:58});
+  arr.push({t:+(t+3.4).toFixed(2),az:142,el:34,r:R,tx:0,ty:130,tz:0,fov:58});
+  useShots(arr,'途径点巡礼 · '+list.length+' 点 · '+(t+3.4).toFixed(1)+' s');
+};
+/* 2 沿线跟拍 */
+el('camFollow').onclick=function(){
+  const d=DIAG;
+  useShots(followShots({n:16,dur:14,back:Math.round(d*0.34),h:Math.round(d*0.20),
+    look:Math.round(d*0.10),up:Math.round(d*0.02)}),'沿线跟拍 · 14 s');
+};
+/* 3 环绕展示（首尾同角，接得上） */
+el('camSpin').onclick=function(){
+  /* 整圈取 4 个方位的最大距离（只按 40° 求一次，转到窄边会空、转到宽边会裁角）；
+     margin 0.96 直接当留边用，不再乘 0.86 —— 乘了角点就会顶到 1.05 出画 */
+  const R=orbitR({az:40,el:34,tx:0,ty:130,tz:0,fov:58,pts:modelPts(),margin:0.96});
+  const arr=[];
+  for(let k=0;k<=4;k++)arr.push({t:+(10*k/4).toFixed(2),az:+(40+k*90).toFixed(1),
+    el:34,r:R,tx:0,ty:130,tz:0,fov:58});
+  useShots(arr,'环绕展示 · 10 s（首尾可接）');
+};
+/* 4 高程跟随：贴地随坡，看爬升 */
+el('camRide').onclick=function(){
+  const d=DIAG;
+  useShots(followShots({n:20,dur:16,back:Math.round(d*0.23),h:Math.round(d*0.11),
+    look:Math.round(d*0.12),up:0}),'高程跟随 · 16 s');
+};
+/* 5 俯冲进场 */
+el('camDive').onclick=function(){
+  const R=globalFit(140,52), p=sampleAt(0.02).p, y=trkYHere(p);
+  const r2=fitR({az:120,el:12,tx:p[0],ty:y+8,tz:p[3],fov:58,
+                 pts:nearPts(p[0],p[3],y,Math.round(DIAG*0.14),Math.round(DIAG*0.09)),margin:0.88});
+  useShots([
+    {t:0,az:140,el:52,r:Math.round(R*1.5),tx:0,ty:130,tz:0,fov:58},
+    {t:1.4,az:136,el:46,r:Math.round(R*0.9),tx:Math.round(p[0]*0.5),ty:y+60,tz:Math.round(p[3]*0.5),fov:58},
+    {t:3.2,az:124,el:16,r:Math.round(r2*1.6),tx:p[0],ty:y+10,tz:p[3],fov:58},
+    {t:4.2,az:120,el:12,r:r2,tx:p[0],ty:y+8,tz:p[3],fov:58}
+  ],'俯冲进场 · 4.2 s');
+};
+/* 6 拉升退场 */
+el('camPull').onclick=function(){
+  const R=fitFull(140,42,0.96), p=sampleAt(0.98).p, y=trkYHere(p);
+  const r1=fitR({az:300,el:14,tx:p[0],ty:y+8,tz:p[3],fov:58,
+                 pts:nearPts(p[0],p[3],y,Math.round(DIAG*0.14),Math.round(DIAG*0.09)),margin:0.88});
+  useShots([
+    {t:0,az:300,el:14,r:r1,tx:p[0],ty:y+8,tz:p[3],fov:58},
+    {t:1.6,az:330,el:22,r:Math.round(r1*1.5),tx:Math.round(p[0]*0.6),ty:y+70,tz:Math.round(p[3]*0.6),fov:58},
+    /* 500°≡140°：接着正向再转 170°，不要写成 140 让插值倒退 190° 绕大圈 */
+    {t:4.0,az:500,el:42,r:R,tx:0,ty:130,tz:0,fov:58},
+    {t:5.0,az:502,el:42,r:R,tx:0,ty:130,tz:0,fov:58}
+  ],'拉升退场 · 5 s');
+};
+/* 7 俯视平面 */
+el('camTop').onclick=function(){
+  const R=fitR({az:180,el:89,tx:0,ty:0,tz:0,fov:58,pts:modelPts(),margin:0.86});
+  /* 两帧同参数会变成 2.6 s 完全静止的死画面（看着像卡住），留 7% 缓慢推进 */
+  useShots([
+    {t:0,az:180,el:89,r:Math.round(R*1.07),tx:0,ty:0,tz:0,fov:58},
+    {t:2.6,az:180,el:89,r:R,tx:0,ty:0,tz:0,fov:58}
+  ],'俯视平面 · 2.6 s');
+};
+/* 8 单点环绕：取离当前取景中心最近的途径点 */
+el('camPoi').onclick=function(){
+  const list=WP.list.filter(function(w){return w.on;});
+  if(!list.length){flashRec('先添加途径点，再生成单点环绕');return;}
+  /* 用相机的真实取景中心：拖动视角不会回写 CAM，原来按 CAM.tx 选点会选到旧位置 */
+  const cur=readCam();
+  let best=list[0], bd=1e12;
+  for(const w of list){
+    const p=sampleAt(w.t).p;
+    const d=Math.hypot(p[0]-cur.tx,p[3]-cur.tz);
+    if(d<bd){bd=d;best=w;}
+  }
+  const p=sampleAt(best.t).p, y=trkYHere(p);
+  const pts=nearPts(p[0],p[3],y,Math.round(DIAG*0.16),Math.round(DIAG*0.11));
+  /* 绕一圈要对 4 个方位求最大距离：只按 az=90（窄边）算，转到 60° 时画面横向差 37% */
+  const R=orbitR({az:60,el:26,tx:p[0],ty:y+15,tz:p[3],fov:58,pts:pts,margin:0.92});
+  const arr=[];
+  for(let k=0;k<=4;k++)arr.push({t:+(5*k/4).toFixed(2),az:+(60+k*90).toFixed(1),
+    el:26,r:R,tx:p[0],ty:y+15,tz:p[3],fov:58});
+  useShots(arr,'单点环绕 · '+best.name+' · 5 s');
+};
+/* 轨迹生长：勾选即生效，页面播放与逐帧渲染共用同一组状态 */
+el('growOn').onchange=function(e){
+  GRW.on=e.target.checked;saveGrow();saveStyle();syncGrow();
+};
+el('growS').oninput=function(e){
+  const v=+e.target.value;if(!isFinite(v))return;
+  GRW.s=Math.max(0,Math.min(59,v));saveGrow();saveStyle();syncGrow();
+};
+el('growD').oninput=function(e){
+  const v=+e.target.value;if(!isFinite(v))return;
+  GRW.d=Math.max(.2,Math.min(30,v));saveGrow();saveStyle();syncGrow();
+};
+el('growOn').checked=GRW.on;
+el('growS').value=GRW.s; el('growD').value=GRW.d;
+
 /* 记录 = 所见即所得：readCam() 读屏幕上真实机位（鼠标拖拽、滑块精调、
    播放头插值都算），并顺手同步回滑块，不用再先点「拾取当前视角」。
    时刻取「记到」输入框：可超过当前总时长，此时自动延长总时长。 */
@@ -841,7 +1538,26 @@ el('camPlay').oninput=e=>{
   PLAY=+e.target.value;previewAt(PLAY);playUi();
 };
 document.querySelectorAll('.camAsp button').forEach(b=>b.onclick=()=>{
-  ASP=b.dataset.a;applyAspect();refreshParam();saveCam();});
+  /* 切换前先量一次「旧画幅下的全局距离」：用它判断当前机位/分镜是中远景还是特写。
+     9:16 的横向视野只有 16:9 的 1/3，沿用旧 r 模型必然左右出框。 */
+  const gOld=globalFit(CAM.az,CAM.el,0.9);
+  ASP=b.dataset.a;
+  applyAspect();
+  const isWide=function(v){return v>gOld*0.55;};   /* 中远景：跟着画幅重算；特写保持 */
+  let touched=false;
+  if(isWide(CAM.r))CAM.r=globalFit(CAM.az,CAM.el,0.9);
+  if(SHOTS.length){
+    SHOTS=SHOTS.map(function(s){
+      if(!isWide(s.r))return s;
+      touched=true;
+      return Object.assign({},s,{r:globalFit(s.az,s.el,0.9)});
+    });
+  }
+  syncCamUI();
+  if(SHOTS.length)previewAt(PLAY);
+  else{if(!TOP)applyCam(CAM);}
+  if(touched)flashRec('分镜已按 '+(ASP==='916'?'9:16':(ASP==='169'?'16:9':'窗口比例'))+' 重算远景距离');
+});
 window.addEventListener('resize',applyAspect);
 el('camToggle').onclick=()=>{
   const b=el('camBody');b.classList.toggle('hide');
@@ -862,6 +1578,47 @@ window.__camProbe=function(){
     recAt:+el('camRecT').value,
     recText:'记到 '+el('camRecT').value+' s | '+el('camPlayV').textContent,
     collapsed:el('camBody').classList.contains('hide')};
+};
+/* 镜头模板自检：按当前画幅逐帧投影，统计「模型 8 角点 / 轨迹采样点」各有几个落在画面内。
+   corner=8 说明沙盘完整，corner 掉说明顶出画框；trk=0 说明这一帧根本看不到轨迹。
+   自动化脚本用它验证每个模板在 16:9 与 9:16 下都不出画。 */
+window.__camAudit=function(step){
+  if(!SHOTS.length)return {error:'no shots'};
+  const ar=fitAr(), cam=new THREE.PerspectiveCamera(58,ar,1,300000);
+  const corners=modelPts(), trk=[];
+  for(let i=0;i<=60;i++){const p=sampleAt(i/60).p;trk.push(new THREE.Vector3(p[0],trkYHere(p),p[3]));}
+  const rows=[];step=step||0.1;
+  for(let t=0;t<=DUR+1e-6;t+=step){
+    const s=shotAt(SHOTS,Math.min(t,DUR));
+    if(!s)break;
+    const a=s.az*Math.PI/180, e=s.el*Math.PI/180;
+    cam.fov=s.fov||58;cam.aspect=ar;cam.up.set(0,1,0);
+    cam.position.set(s.tx+s.r*Math.cos(e)*Math.sin(a),
+                     s.ty+s.r*Math.sin(e),
+                     s.tz+s.r*Math.cos(e)*Math.cos(a));
+    if(e>1.551)cam.up.set(0,0,-1);
+    cam.lookAt(new THREE.Vector3(s.tx,s.ty,s.tz));
+    cam.updateMatrixWorld();cam.updateProjectionMatrix();
+    let ci=0,ti=0,nan=false,out=[];
+    for(const p of corners){
+      const v=p.clone().project(cam);
+      if(Math.abs(v.x)<=1&&Math.abs(v.y)<=1&&v.z<=1)ci++;
+      else if(out.length<3)out.push([+v.x.toFixed(2),+v.y.toFixed(2),+v.z.toFixed(2)]);
+    }
+    for(const p of trk){const v=p.clone().project(cam);
+      if(Math.abs(v.x)<=1&&Math.abs(v.y)<=1&&v.z<=1)ti++;}
+    for(const k of ['az','el','r','tx','ty','tz','fov'])if(!isFinite(s[k]))nan=true;
+    rows.push({t:+t.toFixed(2),az:+azN(s.az).toFixed(0),el:+s.el.toFixed(0),
+      r:Math.round(s.r),corner:ci,trk:ti,nan:nan,out:out});
+  }
+  const pick=function(k,fn){return rows.reduce(function(a,b){return fn(a,b[k])?a:b[k];},rows[0][k]);};
+  return {ar:+ar.toFixed(4),dur:DUR,shots:SHOTS.length,sm:SHOTS[0].sm,
+          minCorner:Math.min.apply(null,rows.map(r=>r.corner)),
+          minTrk:Math.min.apply(null,rows.map(r=>r.trk)),
+          maxTrk:Math.max.apply(null,rows.map(r=>r.trk)),
+          nan:rows.filter(r=>r.nan).length,
+          rMin:pick('r',(a,b)=>b<a), rMax:pick('r',(a,b)=>b>a),
+          rows:rows};
 };
 el('camBody').classList.toggle('hide',COLLAPSED);
 el('camToggle').textContent=COLLAPSED?'展开':'收起';
@@ -909,7 +1666,7 @@ function wpUnpack(s){
   return out;
 }
 function saveWP(){try{localStorage.setItem(WKEY,JSON.stringify(WP));}catch(e){}}
-const WP = {size:WDEF.size, fs:WDEF.fs, label:WDEF.label, list:[]};
+const WP = {size:WDEF.size, fs:WDEF.fs, label:WDEF.label, occ:false, bold:false, list:[]};
 try{
   const sw=JSON.parse(localStorage.getItem(WKEY)||'null');
   if(sw && Array.isArray(sw.list)){
@@ -917,6 +1674,8 @@ try{
     if(isFinite(+sw.size))WP.size=Math.min(30,Math.max(4,+sw.size));
     if(isFinite(+sw.fs))WP.fs=Math.min(26,Math.max(9,+sw.fs));
     if(typeof sw.label==='boolean')WP.label=sw.label;
+    if(typeof sw.occ==='boolean')WP.occ=sw.occ;
+    if(typeof sw.bold==='boolean')WP.bold=sw.bold;
   }
 }catch(e){}
 if(QP.has('wp')){
@@ -926,6 +1685,8 @@ if(QP.has('wp')){
   if(QP.has('wpfs')){const n=parseFloat(QP.get('wpfs'));
     if(isFinite(n))WP.fs=Math.min(26,Math.max(9,n));}
   if(QP.has('wplbl'))WP.label=QP.get('wplbl')!=='0';
+  if(QP.has('wpocc'))WP.occ=QP.get('wpocc')!=='0';
+  if(QP.has('wpb'))WP.bold=QP.get('wpb')!=='0';
 }
 function cleanHex(v,d){v=String(v).replace(/^#/,'');
   return /^[0-9a-fA-F]{6}$/.test(v)?v.toLowerCase():d;}
@@ -973,15 +1734,66 @@ function demAtLocal(x,z){
 /* 所有用到轨迹 y 的地方都必须走这里，改离地高度时管/标记/标签/导出才会同步 */
 function trackY(p,yi){return p[yi]-TK.lift+liftOf(p);}
 function markerY(y){return y-TK.lift+liftOf(null);}
+/* ---------- 轨迹生长（drawRange 动画）：0=没画到，1=整条都出来 ---------- */
+const GROW=[];
+const WPMESH=[];              /* 途径点球/杆/环：随生长进度显隐 */
+let GROWP=1;                  /* 当前生长进度 0..1，updateLabels 要用 */
+const GRW={on:false,s:0,d:4};
+try{
+  const g=JSON.parse(localStorage.getItem('terrain_grow_v1')||'null');
+  if(g){GRW.on=!!g.on;
+    if(isFinite(+g.s))GRW.s=Math.max(0,Math.min(59,+g.s));
+    if(isFinite(+g.d))GRW.d=Math.max(.2,Math.min(30,+g.d));}
+}catch(e){}
+if(QP.has('grow'))GRW.on=QP.get('grow')!=='0';
+if(QP.has('grows')){const n=parseFloat(QP.get('grows'));
+  if(isFinite(n))GRW.s=Math.max(0,Math.min(59,n));}
+if(QP.has('growd')){const n=parseFloat(QP.get('growd'));
+  if(isFinite(n))GRW.d=Math.max(.2,Math.min(30,n));}
+function saveGrow(){try{localStorage.setItem('terrain_grow_v1',JSON.stringify(GRW));}catch(e){}}
+function registerGrow(mesh){
+  const g=mesh.geometry;
+  if(!g||!g.attributes||!g.attributes.position)return;
+  GROW.push({g:g,n:(g.index?g.index.count:g.attributes.position.count),m:mesh});
+}
+function setGrow(p){
+  const q=Math.max(0,Math.min(1,p));
+  GROWP=q;
+  for(const o of GROW){
+    o.m.visible=q>0.0005;
+    o.g.setDrawRange(0,Math.floor(o.n*q));
+  }
+  /* 轨迹还没长到的途径点，球/杆/环先不画，不会出现「悬空地名」 */
+  for(const o of WPMESH)o.m.visible=(o.t<=q+0.004);
+}
+function growP(sec){
+  if(!GRW.on)return 1;
+  return Math.max(0,Math.min(1,(sec-GRW.s)/Math.max(.1,GRW.d)));
+}
+/* 逐帧渲染时由 video.py 的 __setFrame 直接给时刻，页面 rAF 循环（PLAY 恒为 0）
+   会和它抢着改 drawRange，把轨迹整体抹掉，所以这里让位 */
+function syncGrow(){ if(window.__frameMode||window.__exporting)return; if(GROW.length)setGrow(growP(PLAY)); }
+window.__applyGrowAt=function(sec){ if(GROW.length)setGrow(growP(sec)); };
+window.__previewAt=function(t){ PLAY=Math.max(0,Math.min(DUR,+t||0)); previewAt(PLAY); };
+window.__shotsProbe=function(){ return {dur:DUR,shots:SHOTS.length,
+  first:SHOTS[0]||null,last:SHOTS[SHOTS.length-1]||null}; };
+window.__growProbe=function(){
+  return {on:GRW.on,s:GRW.s,d:GRW.d,parts:GROW.length,
+          drawn:GROW.map(function(o){return o.g.drawRange.count;})};
+};
 function styleParams(){
   return 'art='+(ART?'art':'sat')+'&pal='+PAL
        +'&trkw='+TS.w+'&trkc='+TS.c+'&trkhl='+TS.hl+'&trkhc='+TS.hc
        +'&trkop='+TS.op+'&trklift='+TS.lift
        +'&trkx='+(TS.xr?1:0)+'&trkauto='+(TS.auto?1:0)+'&trkshadow='+(TS.shadow?1:0)
        +'&wp='+encodeURIComponent(wpPack())+'&wpsz='+WP.size+'&wpfs='+WP.fs
-       +(WP.label?'':'&wplbl=0')
+       +(WP.label?'':'&wplbl=0')+(WP.occ?'&wpocc=1':'')+(WP.bold?'&wpb=1':'')
        +'&cam='+packCam(CAM)+'&shots='+packShots(SHOTS)
-       +'&dur='+DUR+'&asp='+ASP;
+       +'&dur='+DUR+'&asp='+ASP
+       +'&ex='+(+group.scale.y).toFixed(1)
+       +'&ends='+(el('showEnds').checked?1:0)
+       +'&mk='+(el('showMk').checked?1:0)
+       +'&grow='+(GRW.on?1:0)+'&grows='+GRW.s+'&growd='+GRW.d;
 }
 function saveStyle(){
   try{localStorage.setItem(SKEY,JSON.stringify(TS));}catch(e){}
@@ -1030,7 +1842,7 @@ el('trkInfo').innerHTML = [
  ['段数', TM.segments+' 段 · '+TM.inside_km+' km / 全程 '+TM.length_km+' km'],
  ['累计爬升', TM.ascent_m+' m（全程）'],
  ['KML 高程', TM.gps_min+' – '+TM.gps_max+' m'],
- ['坐标判定', '原坐标 corr='+TM.corr+'，纠偏后 corr='+TM.corr_gcj]
+ ['贴合校验', 'corr='+TM.corr+' · RMSE '+TM.rmse+' m（高程 vs DEM）']
 ].map(([k,v])=>'<div class="kv"><span>'+k+'</span><b>'+v+'</b></div>').join('');
 document.getElementById('profile').innerHTML = TK.profile;
 
@@ -1071,6 +1883,8 @@ function renderWP(){
   el('wpSize').value=WP.size; el('wpSizeVal').textContent=WP.size+' m';
   el('wpFs').value=WP.fs; el('wpFsVal').textContent=WP.fs+' px';
   el('wpLbl').checked=WP.label;
+  el('wpOcc').checked=WP.occ;
+  el('wpBold').checked=WP.bold;
   el('wpKm').max=(TRKLEN/1000).toFixed(2);
   saveWP(); saveStyle();
 }
@@ -1097,16 +1911,18 @@ function buildWaypoints(){
     const mat=new THREE.MeshBasicMaterial({color:col,depthTest:!xray});
     const ball=new THREE.Mesh(new THREE.SphereGeometry(WP.size,16,12),mat);
     ball.position.set(p[0],y+WP.size*1.3,p[3]);ball.renderOrder=12;
-    ball.userData.wpBall=true;trackGroup.add(ball);
+    ball.userData.wpBall=true;trackGroup.add(ball);WPMESH.push({m:ball,t:growT(o.t)});
     const pole=new THREE.Mesh(new THREE.CylinderGeometry(WP.size*.16,WP.size*.16,WP.size*1.3,8),mat);
     pole.position.set(p[0],y+WP.size*.65,p[3]);pole.renderOrder=12;trackGroup.add(pole);
+    WPMESH.push({m:pole,t:growT(o.t)});
     const ring=new THREE.Mesh(new THREE.TorusGeometry(WP.size*1.7,WP.size*.17,8,24),
       new THREE.MeshBasicMaterial({color:col,side:THREE.DoubleSide,depthTest:!xray}));
     ring.rotation.x=-Math.PI/2;ring.position.set(p[0],y+2,p[3]);
-    ring.renderOrder=12;trackGroup.add(ring);
-    const d=label(o.name||('P'+(i+1)),p[0],y+WP.size*2.7,p[3],'wp');
+    ring.renderOrder=12;trackGroup.add(ring);WPMESH.push({m:ring,t:growT(o.t)});
+    const d=label(o.name||('P'+(i+1)),p[0],y+WP.size*2.7,p[3],'wp',growT(o.t));
     d.style.borderColor='#'+o.color;d.style.color='#'+o.color;
     d.style.fontSize=WP.fs+'px';
+    if(WP.bold)d.classList.add('bold');
     labels[labels.length-1].kind='wp';
   });
 }
@@ -1135,6 +1951,16 @@ el('wpList').onclick=function(e){
   WP.list.splice(+row.dataset.i,1);renderWP();buildTrack();
 };
 el('wpLbl').onchange=function(e){WP.label=e.target.checked;saveWP();saveStyle();buildTrack();};
+/* 标签透视开关：关掉后被山体挡住的标签直接不画（滑杆拖动时也立即生效） */
+el('wpOcc').onchange=function(e){WP.occ=e.target.checked;saveWP();saveStyle();updateLabels();};
+/* 加粗只改 class，不重建球和杆，拖动观察时不会闪 */
+function applyWPBold(){
+  document.querySelectorAll('.lbl.wp').forEach(function(e){
+    e.classList.toggle('bold',WP.bold);});
+}
+el('wpBold').onchange=function(e){
+  WP.bold=e.target.checked;saveWP();saveStyle();applyWPBold();
+  if(WP.bold)updateLabels();          /* 变宽后重新排一遍避让 */};
 el('wpSize').oninput=function(e){
   WP.size=+e.target.value;el('wpSizeVal').textContent=WP.size+' m';
   saveWP();saveStyle();buildTrack();};
@@ -1190,12 +2016,15 @@ renderer.domElement.addEventListener('pointerup',function(e){
     +' km，可继续点选或改名';
 });
 window.__waypointProbe=function(){
-  return {count:WP.list.length,size:WP.size,fs:WP.fs,label:WP.label,
+  return {count:WP.list.length,size:WP.size,fs:WP.fs,label:WP.label,occ:WP.occ,
     list:WP.list.map(function(o){return {t:+o.t.toFixed(4),name:o.name,
       color:o.color,on:o.on};}),
     spheres:trackGroup.children.filter(function(o){
       return o.userData&&o.userData.wpBall;}).length,
     wpLabels:labels.filter(function(o){return o.kind==='wp';}).length,
+    wpLabelsShown:labels.filter(function(o){
+      return o.kind==='wp'&&o.el.style.display!=='none'
+        &&o.el.style.opacity!=='0';}).length,
     trackLenKm:+(TRKLEN/1000).toFixed(3),param:el('trkParam').value};
 };
 /* 自检辅助：把某个里程比例的轨迹点投影到屏幕像素，供自动化点击拾取验证 */
@@ -1206,11 +2035,11 @@ window.__wpScreenAt=function(t){
           y:Math.round((-v.y*.5+.5)*innerHeight)};
 };
 renderWP();
-function label(text, x, y, z, cls){
+function label(text, x, y, z, cls, t){
   const d=document.createElement('div');
   d.className='lbl'+(cls?' '+cls:''); d.textContent=text;
   document.body.appendChild(d);
-  labels.push({p:new THREE.Vector3(x,y,z),el:d,base:y});
+  labels.push({p:new THREE.Vector3(x,y,z),el:d,base:y,t:(t===undefined?null:t)});
   return d;
 }
 function clearTrack(){
@@ -1221,6 +2050,19 @@ function clearTrack(){
     if(o.material)o.material.dispose();
   }
   labels.forEach(o=>o.el.remove()); labels.length=0;
+  GROW.length=0; WPMESH.length=0;
+}
+/* 两步路 GPS 高频采样会出现连续同一坐标（本次 285 点里有 47 个相邻重复）。
+   CatmullRomCurve3 在零长度线段上算切向得到零向量，TubeGeometry 顶点变 NaN，
+   整条轨迹管会静默消失（画面上只剩贴地影带，不报错）。建曲线前先按 0.5 m 去重。 */
+function dedupeSeg(seg){
+  if(!seg||!seg.length)return [];
+  const out=[seg[0]];
+  for(let i=1;i<seg.length;i++){
+    const a=out[out.length-1], b=seg[i];
+    if(Math.hypot(b[0]-a[0],b[3]-a[3])>=0.5) out.push(b);
+  }
+  return out;
 }
 function buildTrack(){
   clearTrack();
@@ -1263,32 +2105,42 @@ function buildTrack(){
       sg.setIndex(new THREE.BufferAttribute(si,1));
       const band=new THREE.Mesh(sg,shMat);
       band.renderOrder=0; band.userData.groundShadow=true;
-      trackGroup.add(band);
+      trackGroup.add(band); registerGrow(band);
     }
   }
-  for(const seg of TK.segments){
-    const v=seg.map(p=>new THREE.Vector3(p[0],trackY(p,yi),p[3]));
-    const curve=new THREE.CatmullRomCurve3(v,false,'centripetal');
+  for(const raw of TK.segments){
+    const seg=dedupeSeg(raw);
+    if(seg.length<3) continue;
+    /* 环线：首末重合就走闭合曲线（显式 closed=true 才不会有接缝处的反向切向） */
+    const closed=Math.hypot(seg[0][0]-seg[seg.length-1][0],
+                            seg[0][3]-seg[seg.length-1][3])<2.5;
+    const pts=closed?seg.slice(0,-1):seg;
+    const v=pts.map(p=>new THREE.Vector3(p[0],trackY(p,yi),p[3]));
+    const curve=new THREE.CatmullRomCurve3(v,closed,'centripetal');
     if(haloMat && !xray){
-      const halo=new THREE.Mesh(new THREE.TubeGeometry(curve,v.length,r*hl,6,false),haloMat);
-      halo.renderOrder=1; trackGroup.add(halo);
+      const halo=new THREE.Mesh(new THREE.TubeGeometry(curve,v.length,r*hl,6,closed),haloMat);
+      halo.renderOrder=1; trackGroup.add(halo); registerGrow(halo);
     }
-    const tube=new THREE.Mesh(new THREE.TubeGeometry(curve,v.length,r,8,false),tubeMat);
-    tube.renderOrder=xray?11:2; trackGroup.add(tube);
+    const tube=new THREE.Mesh(new THREE.TubeGeometry(curve,v.length,r,8,closed),tubeMat);
+    tube.renderOrder=xray?11:2; trackGroup.add(tube); registerGrow(tube);
   }
-  // 起终点 / 进入离开建模区 / 航点
-  if(el('showMk').checked){
+  // 起终点 / 进入离开建模区 / 航点（起终点与标注点分开开关）
+  if(el('showEnds').checked){
     for(const e of TK.endpoints){
       const y=markerY(useGps?e.y_gps:e.y_dem);
       const s=new THREE.Mesh(dotGeo,endMat); s.position.set(e.x,y,e.z);
       trackGroup.add(s);
       label(e.label,e.x,y+24,e.z,'end');
     }
+  }
+  if(el('showMk').checked){
     for(const m of TK.markers){
       const y=markerY(useGps?m.y_gps:m.y_dem);
       const s=new THREE.Mesh(dotGeo,dotMat); s.position.set(m.x,y,m.z);
       trackGroup.add(s);
-      if(m.name) label(m.name,m.x,y+22,m.z,'');
+      const mt=nearestT(m.x,m.z);
+      WPMESH.push({m:s,t:growT(mt)});
+      if(m.name) label(m.name,m.x,y+22,m.z,'',growT(mt));
     }
   }
   buildWaypoints();
@@ -1299,6 +2151,7 @@ buildTrack();
 el('showTrk').onchange=()=>{trackGroup.visible=el('showTrk').checked;};
 el('gpsMode').onchange=()=>buildTrack();
 el('showMk').onchange=()=>buildTrack();
+el('showEnds').onchange=()=>buildTrack();
 el('xray').onchange=()=>{TS.xr=el('xray').checked;saveStyle();buildTrack();};
 const SLIDERS={trkW:'w',trkHl:'hl',trkOp:'op',trkLift:'lift'};
 for(const id in SLIDERS)el(id).oninput=e=>{
@@ -1323,10 +2176,15 @@ el('trkCopy').onclick=()=>{
 el('trkGlb').onclick=()=>{
   const g=new THREE.Group();
   const useGps=el('gpsMode').checked, yi=useGps?2:1;
-  for(const seg of TK.segments){
-    const v=seg.map(p=>new THREE.Vector3(p[0],trackY(p,yi),p[3]));
+  for(const raw of TK.segments){
+    const seg=dedupeSeg(raw);
+    if(seg.length<3) continue;
+    const closed=Math.hypot(seg[0][0]-seg[seg.length-1][0],
+                            seg[0][3]-seg[seg.length-1][3])<2.5;
+    const pts=closed?seg.slice(0,-1):seg;
+    const v=pts.map(p=>new THREE.Vector3(p[0],trackY(p,yi),p[3]));
     g.add(new THREE.Mesh(
-      new THREE.TubeGeometry(new THREE.CatmullRomCurve3(v,false,'centripetal'),v.length,+TS.w,8,false),
+      new THREE.TubeGeometry(new THREE.CatmullRomCurve3(v,closed,'centripetal'),v.length,+TS.w,8,closed),
       new THREE.MeshStandardMaterial({color:new THREE.Color('#'+TS.c),roughness:.6})));
   }
   for(const o of WP.list){                 /* 途径点一并导出 */
@@ -1343,7 +2201,28 @@ el('trkGlb').onclick=()=>{
 };
 const _rx=new THREE.Vector3(),_uy=new THREE.Vector3(),_bz=new THREE.Vector3();
 const _north=new THREE.Vector3(0,0,-1);
+/* 标签是否被山体挡住：沿「相机 → 锚点」的视线按 DEM 采样，任一采样点的地表
+   高过视线就算挡住。步长 40 m，掠视时 60 m 宽的山脊也不会漏判；末尾 12% 不采样，
+   否则贴坡的标签会把自己的落点判成遮挡。垂直夸张要先除回模型空间再比高度。 */
+function labelBlocked(w){
+  const sy=group.scale.y||1, cam=camera.position;
+  const ax=w.x, ay=w.y/sy, az=w.z;
+  const cx=cam.x, cy=cam.y/sy, cz=cam.z;
+  const dx=ax-cx, dy=ay-cy, dz=az-cz;
+  const dist=Math.sqrt(dx*dx+dy*dy+dz*dz)||1;
+  const N=Math.min(40,Math.max(10,Math.round(dist/40)));
+  const hw=M.width_m/2, hh=M.height_m/2;
+  for(let k=2;k<N;k++){
+    const t=k/N;
+    if(t>0.88)continue;
+    const px=cx+dx*t, py=cy+dy*t, pz=cz+dz*t;
+    if(Math.abs(px)>hw||Math.abs(pz)>hh)continue;      /* 视线还在模型范围外 */
+    if(demAtLocal(px,pz)>py+2.5)return true;           /* 地表高过视线 → 被挡住 */
+  }
+  return false;
+}
 function updateLabels(){
+  syncGrow();                          /* 轨迹生长：按 PLAY 时刻刷 drawRange */
   if(location.search.indexOf('top')>=0){       // 北朝上正俯视：每帧覆盖 OrbitControls
     controls.enabled=false;
     camera.up.set(0,0,-1);
@@ -1354,18 +2233,46 @@ function updateLabels(){
   camera.matrixWorld.extractBasis(_rx,_uy,_bz);
   const ang=Math.atan2(_north.dot(_rx),_north.dot(_uy));
   el('compassArrow').style.transform='rotate('+(ang*180/Math.PI)+'deg)';
-  const sy=group.scale.y, placed=[];
+  const sy=group.scale.y, placed=[], cand=[];
+  /* 有画幅裁切时标签必须落在框内：原来按整窗换算，竖屏下标签会跑到框外 */
+  const VX=CUTF?CUTF.x:0, VY=CUTF?CUTF.y:0,
+        VW=CUTF?CUTF.w:innerWidth, VH=CUTF?CUTF.h:innerHeight;
   for(const o of labels){
-    const v=o.p.clone(); v.y*=sy; v.project(camera);
-    const vis=v.z<1 && el('showTrk').checked
-      && (o.kind==='wp' ? WP.label : el('showMk').checked);
-    o.el.style.display=vis?'block':'none';
-    if(!vis)continue;
-    let x=(v.x*.5+.5)*innerWidth, y=(-v.y*.5+.5)*innerHeight-6;
+    const w=o.p.clone(); w.y*=sy;                    /* 标签锚点的世界坐标 */
+    const v=w.clone().project(camera);
+    let vis=v.z<1 && el('showTrk').checked
+      && (o.kind==='wp' ? WP.label
+          : (o.el.classList.contains('end') ? el('showEnds').checked
+                                            : el('showMk').checked));
+    /* 透视默认关闭：被山体挡住的标签不画，低角度掠视时不会挤成一团 */
+    if(vis && !WP.occ) vis=!labelBlocked(w);
+    /* 轨迹生长未到该点的标签先透明（淡入过渡在 CSS 里）：
+       避免片头一堆悬空地名，也不影响后续避让计算 */
+    let gok=true;
+    if(vis && GRW.on && o.t!==null && o.t!==undefined && GROWP<0.999)
+      gok = (o.t<=GROWP+0.004);
+    o.el.style.display=(vis?'block':'none');
+    o.el.style.opacity=(gok?'1':'0');
+    if(!vis || !gok)continue;
+    cand.push({o:o, v:v, d:w.distanceToSquared(camera.position)});
+  }
+  /* 近的先占位。撞车的标签最多上移一格，再撞就直接不画——
+     以前是循环上移 8 次，低角度时几个标签会叠成一串，看着像挤在一起。 */
+  cand.sort((a,b)=>a.d-b.d);
+  for(const c of cand){
+    const o=c.o, v=c.v;
+    let x=VX+(v.x*.5+.5)*VW, y=VY+(-v.y*.5+.5)*VH-6;
+    /* 锚点已经出画的标签不必占位，否则会把画面内的标签顶开 */
+    if(x<VX-60 || x>VX+VW+60 || y<VY-60 || y>VY+VH+60){
+      o.el.style.display='none'; o.el.style.opacity='1'; continue;
+    }
     const hw=Math.max(o.el.offsetWidth,60)/2+8;
-    for(let k=0;k<8;k++){
-      if(placed.some(p=>Math.abs(p.x-x)<p.hw+hw && Math.abs(p.y-y)<17)) y-=20;
-      else break;
+    for(let k=0;k<2;k++){
+      if(!placed.some(p=>Math.abs(p.x-x)<p.hw+hw && Math.abs(p.y-y)<17))break;
+      y-=20;
+    }
+    if(placed.some(p=>Math.abs(p.x-x)<p.hw+hw && Math.abs(p.y-y)<17)){
+      o.el.style.display='none'; continue;           /* 还是撞：让位给更近的标签 */
     }
     placed.push({x:x,y:y,hw:hw});
     o.el.style.left=x+'px'; o.el.style.top=y+'px';
@@ -1394,13 +2301,14 @@ window.__setCamera=function(elDeg,azDeg,R,ty){
 __CAM_UI__
 """
 
-page = page.replace("</style>", CSS + CAM_CSS + "</style>")
+page = page.replace("</style>", CSS + CAM_CSS + EXP_CSS + "</style>")
 page = page.replace("<div class=\"src\" id=\"src\"></div>",
                     "<div class=\"src\" id=\"src\"></div>\n"
                     + TRACK_HTML.replace("__PROFILE__", "<div id=\"profile\"></div>" + STYLE_HTML))
 page = page.replace("<label class=\"chk\"><input type=\"checkbox\" id=\"autoRot\">自动旋转</label>",
                     CTRL_HTML + CAM_HTML +
                     "\n<label class=\"chk\"><input type=\"checkbox\" id=\"autoRot\">自动旋转</label>")
+page = page.replace('<div class="panel ctrl">', '<div class="panel ctrl">' + EXP_HTML)
 page = page.replace("<div class=\"btns\"><button id=\"reset\">重置视角</button></div>",
                     "<div class=\"btns\"><button id=\"focusTrk\">聚焦轨迹</button>"
                     "<button id=\"trkGlb\">导出轨迹 GLB</button></div>\n"
@@ -1410,11 +2318,18 @@ page = page.replace("el('status').style.display='none';",
                                                              separators=(",", ":")))
                     .replace("__CAM_CORE__", CAM_CORE)
                     .replace("__CAM_UI__", CAM_UI)
+                    + EXP_JS
                     + "\nel('status').style.display='none';")
 page = page.replace(
     "(function loop(){requestAnimationFrame(loop);controls.update();renderer.render(scene,camera);})();",
-    "(function loop(){requestAnimationFrame(loop);controls.update();"
-    "updateLabels();renderer.render(scene,camera);})();")
+    "(function loop(){requestAnimationFrame(loop);if(window.__exporting)return;"
+    # 框外不重绘会留残影：先把整屏清一次，再按画幅视口画（CUTF.y 是距顶，GL 要翻过来）
+    "if(CUTF){renderer.setScissorTest(false);"
+    "renderer.setViewport(0,0,innerWidth,innerHeight);renderer.clear();"
+    "renderer.setScissorTest(true);"
+    "renderer.setViewport(CUTF.x,innerHeight-CUTF.y-CUTF.h,CUTF.w,CUTF.h);"
+    "renderer.setScissor(CUTF.x,innerHeight-CUTF.y-CUTF.h,CUTF.w,CUTF.h);}"
+    "controls.update();updateLabels();renderer.render(scene,camera);})();")
 page = page.replace(
     "Imagery © Esri, Maxar, Earthstar Geographics",
     "卫星影像为本地离线纹理（Esri/Maxar）；对外发布请改用天地图 / 腾讯地图等合规底图")
@@ -1433,7 +2348,9 @@ for token in ("const TK = {", "trackGroup", "hiking_track.glb",
               "function togglePlay(", "function recordCurrent(",
               "function recTime(", "playing:PLAYING",
               "function applyCam(", "function shotAt(", "function unpackShots(",
-              "window.__camProbe", "&shots=", "&cam="):
+              "window.__camProbe", "&shots=", "&cam=",
+              "id=\"expVideo\"", "id=\"expRes\"", "window.__exportRun",
+              "if(window.__exporting)return;", "expDrawLabels", "#expMask"):
     assert token in page, "inject failed: " + token
 
 old = os.path.join(HERE, "index.html")

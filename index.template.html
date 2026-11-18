@@ -24,6 +24,22 @@ padding:12px 14px;box-shadow:0 2px 10px rgba(30,50,80,.06)}
 /* 提高特异性以覆盖 track.py 注入的 .panel{max-height:calc(100vh - 32px)}；
    两侧面板几乎用满高度，内容超高时才内部滚动 */
 .panel.info,.panel.ctrl{max-height:calc(100vh - 26px);overflow-y:auto;scrollbar-width:thin}
+/* 两侧面板可收起：面板外缘各有一个竖条把手（收起后仍留在屏边，点一下就回来）。
+   想看满屏模型 / 给客户演示时把两块面板都收掉，不遮山体。 */
+.panel{transition:transform .22s ease,opacity .22s ease}
+body.hideL .panel.info{transform:translateX(calc(-100% - 22px));opacity:0;pointer-events:none}
+body.hideR .panel.ctrl{transform:translateX(calc(100% + 22px));opacity:0;pointer-events:none}
+.pHandle{position:absolute;top:50%;margin-top:-32px;width:16px;height:64px;
+display:flex;align-items:center;justify-content:center;padding:0;flex:0 0 auto;
+z-index:10;font:14px/1 system-ui,"Microsoft YaHei",sans-serif;color:#7b8798;
+background:rgba(255,255,255,.94);border:1px solid #e2e7ef;cursor:pointer;
+box-shadow:0 2px 8px rgba(30,50,80,.08);transition:color .15s,background .15s}
+.pHandle:hover{background:#eef4ff;color:#185fa5}
+#tgL{left:0;border-left:0;border-radius:0 8px 8px 0}
+#tgR{right:0;border-right:0;border-radius:8px 0 0 8px}
+/* 收起状态给把手一点提示色，避免以为界面卡住了 */
+body.hideL #tgL,body.hideR #tgR{color:#185fa5;background:#eef4ff}
+@media (max-height:560px){.pHandle{height:46px;margin-top:-23px}}
 .info::-webkit-scrollbar,.ctrl::-webkit-scrollbar{width:6px}
 .info::-webkit-scrollbar-thumb,.ctrl::-webkit-scrollbar-thumb{background:#d9e1ec;border-radius:3px}
 h1{margin:0 0 8px;font-size:15px;font-weight:500}
@@ -87,8 +103,8 @@ max-width:118px;flex:1;min-width:0}
 <div class="src" id="src"></div>
 </div>
 <div class="panel ctrl">
-<div class="row"><label>垂直夸张</label><span class="val" id="exVal">1.6×</span></div>
-<input type="range" id="ex" min="0.5" max="4" step="0.1" value="1.6">
+<div class="row"><label>垂直夸张</label><span class="val" id="exVal">1.0×</span></div>
+<input type="range" id="ex" min="0.5" max="4" step="0.1" value="1">
 <div id="artOnly">
   <div class="row"><label>画面风格</label><select id="artMode">
     <option value="art">插画沙盘</option><option value="sat">卫星写实</option></select></div>
@@ -113,14 +129,54 @@ max-width:118px;flex:1;min-width:0}
 <div class="btns"><button id="topView">北朝上俯视</button></div>
 <div class="btns"><button id="reset">重置视角</button></div>
 </div>
+<button class="pHandle" id="tgL" type="button" title="隐藏信息栏（[）">‹</button>
+<button class="pHandle" id="tgR" type="button" title="隐藏控制台（]）">›</button>
 <div id="compass"><small>北</small><div id="compassArrow"></div><span>N</span></div>
 <div id="status">正在加载 three.js…</div>
-<div id="tip">拖拽旋转 · 滚轮缩放 · 右键平移　|　Imagery © Esri, Maxar, Earthstar Geographics　|　Elevation: Terrarium DEM (SRTM/ASTER)　|　双击 index.html 会自动切到离线单文件版</div>
+<div id="tip">拖拽旋转 · 滚轮缩放 · 右键平移　|　[ / ] 收起左右面板，H 一起收起　|　Imagery © Esri, Maxar, Earthstar Geographics　|　Elevation: Terrarium DEM (SRTM/ASTER)　|　双击 index.html 会自动切到离线单文件版</div>
 
 <script>
 window.addEventListener('error',function(e){
   document.getElementById('status').textContent='加载失败：'+(e.message||'模块未就绪');
 });
+</script>
+<script>
+/* 两侧面板显示 / 隐藏：点屏边竖条，或按 [ 收左侧、] 收右侧、H 一起收/放。
+   状态存 localStorage，刷新和单文件版都记得上次的选择。 */
+(function(){
+  var KEY='terrain.panel', st={l:1,r:1};
+  try{
+    var s=JSON.parse(localStorage.getItem(KEY)||'{}');
+    if(s&&typeof s==='object'){ if(s.l===0||s.l===1)st.l=s.l; if(s.r===0||s.r===1)st.r=s.r; }
+  }catch(e){}
+  var bL=document.getElementById('tgL'), bR=document.getElementById('tgR');
+  if(!bL||!bR) return;
+  function apply(){
+    document.body.classList.toggle('hideL',!st.l);
+    document.body.classList.toggle('hideR',!st.r);
+    bL.textContent=st.l?'‹':'›';
+    bR.textContent=st.r?'›':'‹';
+    bL.title=(st.l?'隐藏信息栏':'展开信息栏')+'（[）';
+    bR.title=(st.r?'隐藏控制台':'展开控制台')+'（]）';
+    bL.setAttribute('aria-expanded',st.l?'true':'false');
+    bR.setAttribute('aria-expanded',st.r?'true':'false');
+    try{ localStorage.setItem(KEY,JSON.stringify(st)); }catch(e){}
+  }
+  function flip(side,on){ st[side]=on?1:0; apply(); }
+  bL.addEventListener('click',function(){ flip('l',!st.l); });
+  bR.addEventListener('click',function(){ flip('r',!st.r); });
+  addEventListener('keydown',function(e){
+    if(e.ctrlKey||e.metaKey||e.altKey) return;
+    var t=e.target, tag=t&&t.tagName;
+    if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||(t&&t.isContentEditable)) return;
+    if(e.key==='['){ flip('l',!st.l); e.preventDefault(); }
+    else if(e.key===']'){ flip('r',!st.r); e.preventDefault(); }
+    else if(e.key==='h'||e.key==='H'){
+      var open=!(st.l&&st.r); st.l=open?1:0; st.r=open?1:0; apply(); e.preventDefault();
+    }
+  });
+  apply();
+})();
 </script>
 <script type="module">
 import * as THREE from 'three';
@@ -153,6 +209,15 @@ else try{
   if(!Q0.has('pal') && PALETTES[a.pal])PAL=a.pal;
   if(typeof a.base==='boolean')el('base').checked=a.base;
 }catch(e){}
+/* 垂直夸张：URL ex= 优先，其次浏览器记忆（和画面风格存在同一个键里） */
+let EX0 = 1;
+if(Q0.has('ex')){
+  const n=parseFloat(Q0.get('ex'));
+  if(isFinite(n))EX0=Math.min(4,Math.max(0.5,n));
+}else try{
+  const a=JSON.parse(localStorage.getItem('terrain_hd_art_v1')||'{}');
+  if(isFinite(+a.ex))EX0=Math.min(4,Math.max(0.5,+a.ex));
+}catch(e){}
 function colorOf(e){
   const S = PALETTES[PAL] || PALETTES.autumn;
   const t = Math.max(0,Math.min(1,(e-MIN)/Math.max(1e-6,MAX-MIN)));
@@ -163,8 +228,8 @@ function colorOf(e){
   return S[S.length-1][1];
 }
 el('meta').innerHTML = [
- ['坐标', 'GCJ02 → WGS84'],
- ['纠偏', M.offset_m[0]+' / +'+M.offset_m[1]+' m'],
+ ['轮廓纠偏', 'GCJ02 → WGS84'],
+ ['轮廓位移', M.offset_m[0]+' / +'+M.offset_m[1]+' m'],
  ['范围', M.bbox_wgs84[0].toFixed(5)+' – '+M.bbox_wgs84[2].toFixed(5)+' E'],
  ['', M.bbox_wgs84[1].toFixed(5)+' – '+M.bbox_wgs84[3].toFixed(5)+' N'],
  ['建模区', Math.round(M.width_m)+' × '+Math.round(M.height_m)+' m'],
@@ -339,8 +404,9 @@ function buildContours(interval){
 }
 buildContours(30);
 
-group.scale.y = 1.6;
+group.scale.y = EX0;
 syncBase();
+el('ex').value=EX0; el('exVal').textContent=EX0.toFixed(1)+'×';
 
 /* 插画沙盘 / 卫星写实：切换背景、光照、辅助线、底座与配色 */
 function applyArt(){
@@ -362,13 +428,15 @@ function applyArt(){
   shellMat.color.setRGB(low[0]*1.1+.08,low[1]*1.1+.08,low[2]*1.1+.08);
   recolor(); applyMode();
   try{localStorage.setItem('terrain_hd_art_v1',
-    JSON.stringify({art:ART,pal:PAL,base:el('base').checked}));}catch(e){}
+    JSON.stringify({art:ART,pal:PAL,base:el('base').checked,ex:+el('ex').value}));}catch(e){}
 }
 el('artMode').onchange=e=>{ART=e.target.value==='art';applyArt();};
 el('pal').onchange=e=>{PAL=e.target.value;applyArt();};
 el('base').onchange=applyArt;
 el('ex').oninput=e=>{const v=+e.target.value;group.scale.y=v;
-  el('exVal').textContent=v.toFixed(1)+'×';syncBase();};
+  el('exVal').textContent=v.toFixed(1)+'×';syncBase();
+  try{const a=JSON.parse(localStorage.getItem('terrain_hd_art_v1')||'{}');
+      a.ex=v;localStorage.setItem('terrain_hd_art_v1',JSON.stringify(a));}catch(err){}};
 el('ct').oninput=e=>{const v=+e.target.value;el('ctVal').textContent=v+' m';buildContours(v);};
 el('sat').onchange=applyMode;
 el('showCt').onchange=e=>{if(contour)contour.visible=!ART&&e.target.checked;};
