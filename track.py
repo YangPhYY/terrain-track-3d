@@ -709,11 +709,14 @@ function expDrawLabels(ctx,W,H,scl,lstyle){
     let y=(-c.v.y*.5+.5)*H-6*scl;
     if(x<-60*scl||x>W+60*scl||y<-60*scl||y>H+60*scl)continue;
     const hw=bw/2+8*scl;
+    /* 与页面 updateLabels 同一规则：贴边的标签往里收，边框不切字 */
+    x=Math.max(hw,Math.min(W-hw,x));
     for(let k=0;k<2;k++){
       if(!placed.some(function(p){return Math.abs(p.x-x)<p.hw+hw&&Math.abs(p.y-y)<17*scl;}))break;
       y-=20*scl;
     }
     if(placed.some(function(p){return Math.abs(p.x-x)<p.hw+hw&&Math.abs(p.y-y)<17*scl;}))continue;
+    y=Math.max(bh+2*scl,Math.min(H-4*scl,y));
     placed.push({x:x,y:y,hw:hw});
     const left=x-bw/2, top=y-bh;
     ctx.save();
@@ -1344,6 +1347,51 @@ function fitFull(az,el,m){
   return fitR({az:az,el:el,tx:0,ty:130,tz:0,fov:58,
                pts:modelPts(),margin:m||0.96});
 }
+/* 全览取景的点集：沙盘 8 角点 + 所有地名标签的锚点。
+   只按角点算的话，贴着模型边缘的地名（「于号村」这类）会正好压在画幅边框上被切掉。 */
+function allPts(){
+  const out=modelPts(), sy=group.scale.y||1;
+  for(const o of labels){const p=o.p.clone(); p.y*=sy; out.push(p);}
+  return out;
+}
+/* 全览距离：8 角点 + 所有标签锚点一起装进来，留 10% 边。
+   切画幅、结尾定格、载入分镜三处都按它校核，保证「沙盘完整 + 边框不压字」。 */
+function overviewR(az,el,m){
+  return fitR({az:az,el:el,tx:0,ty:130,tz:0,fov:58,pts:allPts(),margin:m||0.90});
+}
+/* 所有运镜模板统一的收尾：从末帧位置「拉远 + 抬高」到全局全览，再定格。
+   - 方位沿用末帧（az 不变）：不额外甩镜头，只做拉远，任何模板都不会在结尾突然掉头
+   - 两帧同参数就是定格；时长 back+hold 默认 3.8 s */
+function endGlobal(arr,o){
+  o=o||{};
+  const A=arr[arr.length-1];
+  const back=(o.back===undefined?1.8:o.back), hold=(o.hold===undefined?2.0:o.hold);
+  const az=+(o.az===undefined?A.az:o.az).toFixed(1);
+  const el=o.el||34;
+  const R=o.r||overviewR(az,el,0.90);
+  arr.push({t:+(A.t+back).toFixed(2),az:az,el:el,r:R,tx:0,ty:130,tz:0,fov:58});
+  arr.push({t:+(A.t+back+hold).toFixed(2),az:az,el:el,r:R,tx:0,ty:130,tz:0,fov:58});
+  return arr;
+}
+/* 载入分镜 / 切画幅后校核「全局机位」：距离不够就拉到当前画幅的全览距离（只加不减）。
+   16:9 写好的分镜直接放到 9:16 里，r 只有所需的一半，模型会左右出框被边框切掉。 */
+function normOverview(){
+  let ch=false;
+  const isGlob=function(s){
+    return Math.abs(s.tx||0)<DIAG*0.15 && Math.abs(s.tz||0)<DIAG*0.15 && Math.abs(s.r)>DIAG*0.72;
+  };
+  SHOTS=SHOTS.map(function(s){
+    if(!isGlob(s))return s;
+    const need=overviewR(s.az,s.el,0.90);
+    if(Math.abs(s.r)>=need*0.995)return s;
+    ch=true; return Object.assign({},s,{r:need});
+  });
+  if(CAM&&isGlob(CAM)){
+    const need=overviewR(CAM.az,CAM.el,0.90);
+    if(Math.abs(CAM.r)<need*0.995){CAM=Object.assign({},CAM,{r:need});ch=true;}
+  }
+  return ch;
+}
 function useShots(arr,tip){
   /* 模板生成的帧一律标 sm:0（线性插值）：帧距 0.8–2.5 s，靠插值本身就连得上，
      不需要每段再缓入缓出；手调/记录的分镜不带 sm，保持原来的电影感停顿。 */
@@ -1369,69 +1417,110 @@ function followShots(o){
   }
   return arr;
 }
-/* 1 途径点巡礼：每点「远处进→特写停→再飞下一个」，末段拉远定格全局 */
+/* 1 途径点巡礼：镜头沿轨迹连续前进，依次路过每个途径点（路过时微微推近），
+   最后拉回全局全览定格。以前是「每个点飞进飞出」的跳切，镜头不连贯。 */
+function tourShots(o){
+  o=o||{};
+  const list=(o.list||[]).slice().sort(function(a,b){return a.t-b.t;});
+  const n=o.n||Math.min(40,Math.max(24,list.length*6));
+  const dur=o.dur||Math.min(20,Math.max(8,list.length*1.5));
+  const d=DIAG;
+  /* 比「高程跟随」再高一点：巡礼要看得见前方一串途径点，贴太平会只看到近处一段路 */
+  /* 竖屏（9:16）横向视野只有 16:9 的 1/3：同样的机位只剩一条窄带，上半屏全是空白。
+     跟拍类镜头按画幅整体拉远 + 抬高，框里才有地形。 */
+  const pf=fitAr()<1?1.6:1, ph=fitAr()<1?2.0:1;
+  const back=Math.round((o.back||d*0.32)*pf), h=Math.round((o.h||d*0.22)*ph),
+        look=Math.round((o.look||d*0.10)*pf),
+        up=(o.up===undefined?Math.round(-d*0.02):o.up), fov=o.fov||58;
+  /* 速度权重：靠近途径点自动放慢（最多 2.2×），「依次路过」才看得清，
+     又不会像逐点停顿那样一顿一顿；权重积分后反解出每一帧的里程比例 */
+  const NS=600, wt=[];
+  let acc=0;
+  for(let i=0;i<=NS;i++){
+    const f=i/NS; let k=1;
+    for(const w of list){
+      const dd=Math.abs(f-w.t);
+      if(dd<0.05)k+=1.2*(1-dd/0.05);
+    }
+    acc+=k; wt.push(acc);
+  }
+  const total=wt[NS]||1;
+  const fOf=function(u){
+    const target=u*total;
+    let lo=0,hi=NS;
+    while(lo<hi){const mid=(lo+hi)>>1; if(wt[mid]<target)lo=mid+1; else hi=mid;}
+    return lo/NS;
+  };
+  const arr=[];
+  for(let i=0;i<=n;i++){
+    const u=i/n, f=fOf(u), p=sampleAt(f).p;
+    /* 切线「前一点 → 后一点」：只朝前采样在终点会退化成零向量，机位会跑到正上方 */
+    const pa=sampleAt(Math.max(0,f-0.02)).p, pb=sampleAt(Math.min(1,f+0.02)).p;
+    let dx=pb[0]-pa[0], dz=pb[3]-pa[3];
+    const L=Math.hypot(dx,dz)||1; dx/=L; dz/=L;
+    /* 路过途径点时轻微推近（0.90×），像凑近看一眼再继续走 */
+    let near=0;
+    for(const w of list){const dd=Math.abs(f-w.t); if(dd<0.04)near=Math.max(near,1-dd/0.04);}
+    const kk=1-0.10*near;
+    const y=trkYHere(p);
+    const pos=new THREE.Vector3(p[0]-dx*back*kk, y+h*kk, p[3]-dz*back*kk);
+    const tgt=new THREE.Vector3(p[0]+dx*look*kk, y+up, p[3]+dz*look*kk);
+    arr.push(Object.assign({t:+(dur*u).toFixed(2)}, camAtPos(pos,tgt,fov)));
+  }
+  return arr;
+}
 el('camTour').onclick=function(){
   const list=WP.list.filter(function(w){return w.on;});
   if(!list.length){flashRec('先添加途径点，再生成巡礼');return;}
-  const STEP=2.2, arr=[], az0=readCam().az;   /* 从当前实际视角起转，不用面板里的旧值 */
-  let t=0;
-  list.forEach(function(w,i){
-    const p=sampleAt(w.t).p, y=trkYHere(p), fov=58;
-    const az=+((az0+i*18)%360).toFixed(1);
-    const near=function(){return nearPts(p[0],p[3],y,Math.round(DIAG*0.10),Math.round(DIAG*0.07));};
-    /* 远景帧与特写帧各自求距离：特写 el 从 30 降到 22，同一距离会放大画面，
-       原来拿 r1*0.72 顶替，陡坡上的点会顶出画框 */
-    const r1=fitR({az:az,el:30,tx:p[0],ty:y+18,tz:p[3],fov:fov,pts:near(),margin:0.92});
-    const r2=fitR({az:az+10,el:22,tx:p[0],ty:y+12,tz:p[3],fov:fov,pts:near(),margin:0.92});
-    arr.push({t:+t.toFixed(2),az:az,el:30,r:r1,tx:p[0],ty:y+18,tz:p[3],fov:fov});
-    arr.push({t:+(t+STEP*0.62).toFixed(2),az:+(az+10).toFixed(1),el:22,r:r2,tx:p[0],ty:y+12,tz:p[3],fov:fov});
-    arr.push({t:+(t+STEP).toFixed(2),az:+(az+10).toFixed(1),el:22,r:r2,tx:p[0],ty:y+12,tz:p[3],fov:fov});
-    t+=STEP;
-  });
-  /* 定格帧的 el 必须和求距离时一致：原来按 30° 求 r、却按 34° 拍，沙盘会小一圈；
-     再用 fitFull 而不是 globalFit 的 0.86，收尾时沙盘完整不出框 */
-  const R=fitFull(138,34,0.96);
-  arr.push({t:+(t+1.6).toFixed(2),az:138,el:34,r:R,tx:0,ty:130,tz:0,fov:58});
-  arr.push({t:+(t+3.4).toFixed(2),az:142,el:34,r:R,tx:0,ty:130,tz:0,fov:58});
-  useShots(arr,'途径点巡礼 · '+list.length+' 点 · '+(t+3.4).toFixed(1)+' s');
+  const arr=tourShots({list:list});
+  endGlobal(arr,{back:2.0,hold:2.2});
+  const T=arr[arr.length-1].t;
+  useShots(arr,'途径点巡礼 · '+list.length+' 点 · 沿线 '+(T-4.2).toFixed(1)+' s + 全览定格');
 };
-/* 2 沿线跟拍 */
+/* 2 沿线跟拍（结尾拉回全览定格） */
 el('camFollow').onclick=function(){
   const d=DIAG;
-  useShots(followShots({n:16,dur:14,back:Math.round(d*0.34),h:Math.round(d*0.20),
-    look:Math.round(d*0.10),up:Math.round(d*0.02)}),'沿线跟拍 · 14 s');
+  const arr=followShots({n:16,dur:14,back:Math.round(d*0.34),h:Math.round(d*0.20),
+    look:Math.round(d*0.10),up:Math.round(d*0.02)});
+  endGlobal(arr);
+  useShots(arr,'沿线跟拍 · '+arr[arr.length-1].t.toFixed(1)+' s');
 };
 /* 3 环绕展示（首尾同角，接得上） */
 el('camSpin').onclick=function(){
   /* 整圈取 4 个方位的最大距离（只按 40° 求一次，转到窄边会空、转到宽边会裁角）；
-     margin 0.96 直接当留边用，不再乘 0.86 —— 乘了角点就会顶到 1.05 出画 */
-  const R=orbitR({az:40,el:34,tx:0,ty:130,tz:0,fov:58,pts:modelPts(),margin:0.96});
+     margin 0.90 = 留 10% 边给地名标签，角点不会顶到边框上 */
+  const R=orbitR({az:40,el:34,tx:0,ty:130,tz:0,fov:58,pts:allPts(),margin:0.90});
   const arr=[];
   for(let k=0;k<=4;k++)arr.push({t:+(10*k/4).toFixed(2),az:+(40+k*90).toFixed(1),
     el:34,r:R,tx:0,ty:130,tz:0,fov:58});
-  useShots(arr,'环绕展示 · 10 s（首尾可接）');
+  useShots(arr,'环绕展示 · 10 s（首尾可接 · 全程全览）');
 };
-/* 4 高程跟随：贴地随坡，看爬升 */
+/* 4 高程跟随：贴地随坡，看爬升（结尾拉回全览定格） */
 el('camRide').onclick=function(){
   const d=DIAG;
-  useShots(followShots({n:20,dur:16,back:Math.round(d*0.23),h:Math.round(d*0.11),
-    look:Math.round(d*0.12),up:0}),'高程跟随 · 16 s');
+  const arr=followShots({n:20,dur:16,back:Math.round(d*0.23),h:Math.round(d*0.11),
+    look:Math.round(d*0.12),up:0});
+  endGlobal(arr);
+  useShots(arr,'高程跟随 · '+arr[arr.length-1].t.toFixed(1)+' s');
 };
-/* 5 俯冲进场 */
+/* 5 俯冲进场（落点特写后拉回全览定格） */
 el('camDive').onclick=function(){
   const R=globalFit(140,52), p=sampleAt(0.02).p, y=trkYHere(p);
   const r2=fitR({az:120,el:12,tx:p[0],ty:y+8,tz:p[3],fov:58,
                  pts:nearPts(p[0],p[3],y,Math.round(DIAG*0.14),Math.round(DIAG*0.09)),margin:0.88});
-  useShots([
+  const arr=[
     {t:0,az:140,el:52,r:Math.round(R*1.5),tx:0,ty:130,tz:0,fov:58},
     {t:1.4,az:136,el:46,r:Math.round(R*0.9),tx:Math.round(p[0]*0.5),ty:y+60,tz:Math.round(p[3]*0.5),fov:58},
     {t:3.2,az:124,el:16,r:Math.round(r2*1.6),tx:p[0],ty:y+10,tz:p[3],fov:58},
     {t:4.2,az:120,el:12,r:r2,tx:p[0],ty:y+8,tz:p[3],fov:58}
-  ],'俯冲进场 · 4.2 s');
+  ];
+  endGlobal(arr,{back:1.6,hold:1.8});
+  useShots(arr,'俯冲进场 · '+arr[arr.length-1].t.toFixed(1)+' s');
 };
 /* 6 拉升退场 */
 el('camPull').onclick=function(){
-  const R=fitFull(140,42,0.96), p=sampleAt(0.98).p, y=trkYHere(p);
+  const R=fitR({az:140,el:42,tx:0,ty:130,tz:0,fov:58,pts:allPts(),margin:0.90});
+  const p=sampleAt(0.98).p, y=trkYHere(p);
   const r1=fitR({az:300,el:14,tx:p[0],ty:y+8,tz:p[3],fov:58,
                  pts:nearPts(p[0],p[3],y,Math.round(DIAG*0.14),Math.round(DIAG*0.09)),margin:0.88});
   useShots([
@@ -1439,19 +1528,21 @@ el('camPull').onclick=function(){
     {t:1.6,az:330,el:22,r:Math.round(r1*1.5),tx:Math.round(p[0]*0.6),ty:y+70,tz:Math.round(p[3]*0.6),fov:58},
     /* 500°≡140°：接着正向再转 170°，不要写成 140 让插值倒退 190° 绕大圈 */
     {t:4.0,az:500,el:42,r:R,tx:0,ty:130,tz:0,fov:58},
-    {t:5.0,az:502,el:42,r:R,tx:0,ty:130,tz:0,fov:58}
-  ],'拉升退场 · 5 s');
+    {t:5.6,az:502,el:42,r:R,tx:0,ty:130,tz:0,fov:58}
+  ],'拉升退场 · 5.6 s（尾帧全览定格）');
 };
 /* 7 俯视平面 */
 el('camTop').onclick=function(){
-  const R=fitR({az:180,el:89,tx:0,ty:0,tz:0,fov:58,pts:modelPts(),margin:0.86});
+  const R=fitR({az:180,el:89,tx:0,ty:0,tz:0,fov:58,pts:allPts(),margin:0.88});
   /* 两帧同参数会变成 2.6 s 完全静止的死画面（看着像卡住），留 7% 缓慢推进 */
   useShots([
     {t:0,az:180,el:89,r:Math.round(R*1.07),tx:0,ty:0,tz:0,fov:58},
-    {t:2.6,az:180,el:89,r:R,tx:0,ty:0,tz:0,fov:58}
-  ],'俯视平面 · 2.6 s');
+    {t:2.6,az:180,el:89,r:R,tx:0,ty:0,tz:0,fov:58},
+    /* 顶视也是全览，但要定格够久，别刚推到位就结束 */
+    {t:4.4,az:180,el:89,r:R,tx:0,ty:0,tz:0,fov:58}
+  ],'俯视平面 · 4.4 s（尾帧全览定格）');
 };
-/* 8 单点环绕：取离当前取景中心最近的途径点 */
+/* 8 单点环绕：取离当前取景中心最近的途径点（结尾拉回全览定格） */
 el('camPoi').onclick=function(){
   const list=WP.list.filter(function(w){return w.on;});
   if(!list.length){flashRec('先添加途径点，再生成单点环绕');return;}
@@ -1470,7 +1561,8 @@ el('camPoi').onclick=function(){
   const arr=[];
   for(let k=0;k<=4;k++)arr.push({t:+(5*k/4).toFixed(2),az:+(60+k*90).toFixed(1),
     el:26,r:R,tx:p[0],ty:y+15,tz:p[3],fov:58});
-  useShots(arr,'单点环绕 · '+best.name+' · 5 s');
+  endGlobal(arr,{back:1.8,hold:2.0});
+  useShots(arr,'单点环绕 · '+best.name+' · '+arr[arr.length-1].t.toFixed(1)+' s');
 };
 /* 轨迹生长：勾选即生效，页面播放与逐帧渲染共用同一组状态 */
 el('growOn').onchange=function(e){
@@ -1544,13 +1636,15 @@ document.querySelectorAll('.camAsp button').forEach(b=>b.onclick=()=>{
   ASP=b.dataset.a;
   applyAspect();
   const isWide=function(v){return v>gOld*0.55;};   /* 中远景：跟着画幅重算；特写保持 */
+  /* 取景中心在沙盘外（POI 特写那种）不按全览重算，否则会把特写拉成远景 */
+  const isGlob=function(s){return Math.abs(s.tx||0)<DIAG*0.15 && Math.abs(s.tz||0)<DIAG*0.15;};
   let touched=false;
-  if(isWide(CAM.r))CAM.r=globalFit(CAM.az,CAM.el,0.9);
+  if(isWide(CAM.r)&&isGlob(CAM))CAM.r=overviewR(CAM.az,CAM.el,0.90);
   if(SHOTS.length){
     SHOTS=SHOTS.map(function(s){
-      if(!isWide(s.r))return s;
+      if(!isWide(s.r)||!isGlob(s))return s;
       touched=true;
-      return Object.assign({},s,{r:globalFit(s.az,s.el,0.9)});
+      return Object.assign({},s,{r:overviewR(s.az,s.el,0.90)});
     });
   }
   syncCamUI();
@@ -1563,6 +1657,23 @@ el('camToggle').onclick=()=>{
   const b=el('camBody');b.classList.toggle('hide');
   el('camToggle').textContent=b.classList.contains('hide')?'展开':'收起';
   saveCam();
+};
+/* 量当前画面里「沙盘 8 角点 / 标签锚点」的 NDC 范围：判断全览是宽还是高先顶住，
+   以及标签有没有压到画幅边框（自检脚本用） */
+window.__ndcProbe=function(){
+  const bb=function(list){
+    let x0=9,x1=-9,y0=9,y1=-9,n=0,out=0;
+    for(const p of list){
+      const v=p.clone().project(camera);
+      if(v.z>1){out++;continue;}
+      n++;x0=Math.min(x0,v.x);x1=Math.max(x1,v.x);
+      y0=Math.min(y0,v.y);y1=Math.max(y1,v.y);
+    }
+    return {n:n,out:out,x:[+x0.toFixed(3),+x1.toFixed(3)],y:[+y0.toFixed(3),+y1.toFixed(3)]};
+  };
+  const all=allPts();
+  return {corner:bb(all.slice(0,modelPts().length)),label:bb(all.slice(modelPts().length)),
+          fw:CUTF?CUTF.w:innerWidth,fh:CUTF?CUTF.h:innerHeight};
 };
 window.__camProbe=function(){
   return {cam:CAM,shots:SHOTS.map(o=>Object.assign({},o)),dur:DUR,asp:ASP,
@@ -1622,6 +1733,9 @@ window.__camAudit=function(step){
 };
 el('camBody').classList.toggle('hide',COLLAPSED);
 el('camToggle').textContent=COLLAPSED?'展开':'收起';
+/* 载入的分镜（URL / 本地存档）可能是 16:9 写的：先在当前画幅下校核一遍全览机位，
+   否则 9:16 里 r 只有所需一半，沙盘会左右出框被画幅边框切掉 */
+normOverview();
 syncCamUI();
 if(TOP)el('camPlayV').textContent='正俯视模式：镜头滑块暂不生效';
 else if(QP.has('cam'))applyCam(CAM);
@@ -2267,6 +2381,8 @@ function updateLabels(){
       o.el.style.display='none'; o.el.style.opacity='1'; continue;
     }
     const hw=Math.max(o.el.offsetWidth,60)/2+8;
+    /* 贴边的标签往里收：画幅边框不能把字切掉（9:16 时最外侧的地名最容易压在框线上） */
+    x=Math.max(VX+hw,Math.min(VX+VW-hw,x));
     for(let k=0;k<2;k++){
       if(!placed.some(p=>Math.abs(p.x-x)<p.hw+hw && Math.abs(p.y-y)<17))break;
       y-=20;
@@ -2274,6 +2390,7 @@ function updateLabels(){
     if(placed.some(p=>Math.abs(p.x-x)<p.hw+hw && Math.abs(p.y-y)<17)){
       o.el.style.display='none'; continue;           /* 还是撞：让位给更近的标签 */
     }
+    y=Math.max(VY+14,Math.min(VY+VH-8,y));
     placed.push({x:x,y:y,hw:hw});
     o.el.style.left=x+'px'; o.el.style.top=y+'px';
   }

@@ -14,7 +14,7 @@ description_en: |
   Build an interactive three.js mountain diorama from a GeoJSON outline + KML track,
   with DEM/satellite tiles, ground-snapped track, stylized/satellite modes, waypoints,
   camera keyframes, offline single-file build, and frame-by-frame video export.
-version: 1.3.0
+version: 1.3.1
 agent_created: true
 license: MIT
 category: media
@@ -154,14 +154,17 @@ cp -r ../terrain-hd/{_cam_check.mjs,_play_check.mjs,_diag.mjs,MAKING_RULES.md} .
 
 | 按钮 | 生成逻辑 | 时长 |
 |---|---|---|
-| 途径点巡礼 | 每点「远处进 → 特写停 → 飞下一个」，末段拉远定格 | 点数×2.2 + 3.4 s |
-| 沿线跟拍 | 轨迹后上方 0.34 / 0.20×对角线，朝前进方向 | 14 s |
-| 环绕展示 | 匀速一圈 az 40→400，首尾同角可接 | 10 s |
-| 高程跟随 | 0.23 / 0.11×，贴地随坡 | 16 s |
-| 俯冲进场 | 高空 → 起点低角度 | 4.2 s |
-| 拉升退场 | 终点低角度 → 全局 | 5 s |
-| 俯视平面 | el 89°、北朝上，2.6 s 缓推 7% | 2.6 s |
-| 单点环绕 | 绕离当前取景中心最近的途径点 | 5 s |
+| 途径点巡礼 | **沿轨迹连续前进**，靠近途径点自动放慢（≤2.2×）+ 轻微推近（0.9×），末段拉回全览定格 | 点数×1.5（8–20 s）+ 4.2 s |
+| 沿线跟拍 | 轨迹后上方 0.34 / 0.20×对角线，朝前进方向，结尾全览定格 | 14 + 3.8 s |
+| 环绕展示 | 匀速一圈 az 40→400，首尾同角可接；全程全览 | 10 s |
+| 高程跟随 | 0.23 / 0.11×，贴地随坡，结尾全览定格 | 16 + 3.8 s |
+| 俯冲进场 | 高空 → 起点低角度 → 拉回全览 | 4.2 + 3.4 s |
+| 拉升退场 | 终点低角度 → 全局 | 5.6 s |
+| 俯视平面 | el 89°、北朝上，缓推 7% 后定格 | 4.4 s |
+| 单点环绕 | 绕最近的途径点一圈 → 全览定格 | 5 + 3.8 s |
+
+**结尾铁律**：除环绕 / 俯视本身全程全览，其它模板都由 `endGlobal()` 追加「拉远 + 抬高到 el 34 + 中心」两帧，
+定格 2 s。用户明确要求过：**无论哪种镜头，最后的定格都必须是 3D 模型全览，不能被画幅边框切**。
 
 **取景三条铁律**（2026-11-18 全量排查后定稿）：
 
@@ -169,8 +172,14 @@ cp -r ../terrain-hd/{_cam_check.mjs,_play_check.mjs,_diag.mjs,MAKING_RULES.md} .
    竖屏横向视野只有横屏 1/3，用窗口比例求 r，模型必然左右出框 —— 这就是「竖版 9:16 模型超出屏幕」的根因。
 2. **环绕取整圈最大距离**：`orbitR()` 对 4 个方位各求一次 `fitR` 取 max。只按起始方位算，转到「宽边」就裁角
    （单点环绕原来按 az=90 窄边算，转到 60° 横向差 37%）。
-3. **要完整的镜头用 `fitFull()`（margin 0.96，不缩）**，不要用 `globalFit()`：后者乘 0.86，
+3. **要完整的镜头用 `overviewR()`（`allPts()` + margin 0.90）**，不要用 `globalFit()`：后者乘 0.86，
    会把 `fitR(margin 0.9)` 放大到 ndc≈1.05，角点出画。`globalFit` 只留给初始视角这类允许裁角的场景。
+   `allPts()` = 8 角点 + 所有标签锚点（不然贴边的地名会被框线切）。
+4. **载入分镜先校核**：`normOverview()` 对「中心目标 + r > 0.72×对角线」的全局机位，距离不足就补到当前画幅的
+   全览距离（只加不减）。16:9 写好的分镜拿到 9:16，r 只有一半，模型必然左右出框。
+5. **视频页画幅以窗口为准**：`video.py` 的 FRAME_JS 最前面按 `innerWidth/innerHeight` 校正 `ASP` 并 `normOverview()`，
+   而且必须在 `const VSHOTS = SHOTS…` **之前**（它会重建数组）。URL 里的 `asp=` 只用于页面预览。
+   视频页也不要写死 `group.scale.y`，统一听 `ex=`。
 
 其它三个易漏点：
 
@@ -178,9 +187,13 @@ cp -r ../terrain-hd/{_cam_check.mjs,_play_check.mjs,_diag.mjs,MAKING_RULES.md} .
   手调「记录当前画面」的帧不带 `sm`，保持缓入缓出。
 - **顶视时 `fitR` 的临时相机也要 `up=(0,0,-1)`**（与 `applyCam` 一致），否则判定 roll 差 90°，长条形模型「算着装下了、实际超框」。
 - **巡礼 / 单点环绕用 `readCam()`，不要用 `CAM`**：拖动视角不回写 `CAM`，按 `CAM.az/tx` 会拿旧位置选点。
+- **竖屏跟拍要抬远**：9:16 横向视野只有 1/3，同样的 back/h 只剩一条窄带。`tourShots()` 在 `fitAr()<1` 时
+  back/look ×1.6、h ×2.0。
+- **标签贴边往里收**：页面 `updateLabels()` 与导出 `expDrawLabels()` 都做 clamp，否则最外侧地名被边框切半。
 
 自检：`node _cam_tpl_check.mjs` —— 16:9 与 9:16 各跑一遍，用页面里的 `__camAudit()` 逐帧投影统计
-「模型 8 角点 / 轨迹采样点」入画数：环绕与俯视要求 `corner=8`，跟拍要求每帧有轨迹（`trk≥1`），且全程无 NaN。
+「模型 8 角点 / 轨迹采样点」入画数：**所有模板的最后一帧必须 `corner=8`（全览定格）**，
+环绕与俯视全程 `corner=8`，跟拍要求每帧有轨迹（`trk≥1`），且全程无 NaN。
 
 ## 最容易错的 7 件事
 

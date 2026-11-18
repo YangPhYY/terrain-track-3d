@@ -112,6 +112,9 @@ async function audit(id) {
         ` corner=${a.minCorner} trk=${a.minTrk}~${a.maxTrk}`;
       let ok = true; const why = [];
       if (a.nan) { ok = false; why.push('NaN 帧 ' + a.nan); }
+      /* 所有模板的最后一帧必须是「全览定格」：8 个角点全部在框内（用户要求） */
+      const lastRow = a.rows[a.rows.length - 1];
+      if (lastRow.corner < 8) { ok = false; why.push('结尾不是全览 corner=' + lastRow.corner); }
       if (kind === 'orbit' || kind === 'top') {
         if (a.minCorner < 8) { ok = false; why.push('沙盘出画 corner=' + a.minCorner); }
       }

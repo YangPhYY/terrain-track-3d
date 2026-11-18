@@ -51,6 +51,15 @@ NEW_LOOP = ("(function loop(){requestAnimationFrame(loop);"
 FRAME_JS = r"""
 /* ---------------- 确定性逐帧镜头（视频导出） ---------------- */
 window.__frameMode = true;
+/* 视频页的画幅就是窗口本身：URL 里的 asp= 是页面预览用的，拿它算取景会算错
+   （16:9 的分镜在 9:16 的视频里 r 只有所需一半，模型左右出框被切）。
+   必须先校正 ASP + 校核分镜，再让下面的 VSHOTS 取这份（已校核的）分镜表 ——
+   normOverview 会重建数组，晚一步 VSHOTS 就还是旧的。 */
+(function(){
+  const ar = innerWidth/Math.max(1,innerHeight);
+  ASP = Math.abs(ar-9/16) < 0.03 ? '916' : (Math.abs(ar-16/9) < 0.03 ? '169' : '0');
+  if(typeof normOverview === 'function') normOverview();
+})();
 const _q = new URLSearchParams(location.search);
 const FPS = +(_q.get('fps') || 24);
 /* 分镜表直接复用页面轨迹层里的 SHOTS：它已按 shots= 参数 / localStorage /
@@ -62,7 +71,8 @@ controls.enabled = false;
 controls.autoRotate = false;
 scene.fog.near = 5200; scene.fog.far = 12000;
 grid.visible = false;                 // 去掉 CAD 网格底，画面更干净
-group.scale.y = 1.6;
+/* 垂直夸张不要在这里写死：以前固定 group.scale.y=1.6，视频比页面预览高 60%，
+   结尾全览会被上下边框切掉，断点也与页面构图对不上。统一听 ex= 参数（默认 1.0）。 */
 
 /* 页面与视频共用同一份 applyCam / shotAt（定义在注入的轨迹层脚本里），
    这样页面播放头预览到的构图就是逐帧渲染出来的构图。 */
