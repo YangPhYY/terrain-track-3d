@@ -30,7 +30,9 @@ TRACK_STYLE = {"w": TUBE_R, "c": TRACK_COLOR, "hl": HALO_SCALE,
                "auto": True,       # 自动模式：缓坡贴地、陡坡略抬升，平衡贴地感与可见度
                "shadow": True}     # 贴地假投影：给低角度视角一个「地面在哪」的接触线索
 # ---- 途径点默认值：默认不预置任何点（不虚构地名），由用户在页面上添加 ----
-WAYPOINT_DEF = {"size": 12.0, "fs": 12.0, "label": True, "list": []}
+# fs = 标签基准字号（1080p 画布）：成片里 3D 画面常缩成 1/3 宽的小窗，
+# 12 px 缩完只剩 4 px 完全看不清，基准提到 34 px（小窗里约 11 px 才可读）。
+WAYPOINT_DEF = {"size": 12.0, "fs": 34.0, "label": True, "list": []}
 # ---- 默认分镜表：单一数据源，video.py 也从 track.json 读它 ----
 # 页面「镜头控制」可覆盖，结果经 shots= 参数传给 video.html；不填参数时行为与旧版一致。
 DEFAULT_SHOTS = [
@@ -321,6 +323,11 @@ justify-content:space-between;align-items:center}
 .camPresets,.camBtns{display:flex;gap:4px;margin:5px 0;align-items:center}
 .camPresets.wrap{flex-wrap:wrap}
 .camPresets.wrap button{flex:1 1 46%}
+/* 生长速度档位：一行塞得下 5 个倍率 + 铺满 */
+.growSpd{display:flex;flex-wrap:wrap;gap:3px;align-items:center;margin:2px 0 4px}
+.growSpd button{font-size:9.5px;padding:3px 2px;border-radius:4px;min-width:29px;flex:1 1 0}
+.growSpd button.on{background:#185fa5;color:#fff;border-color:#185fa5}
+#growSpdV{color:#8b96a6}
 .camMini{font-size:10px;color:#8b96a6;white-space:nowrap}
 #growS,#growD{width:46px;font-size:11px;padding:2px 3px;border:1px solid #d6dee9;border-radius:4px}
 .camPresets button,.camBtns button{font-size:10px;padding:4px 2px;white-space:nowrap}
@@ -380,9 +387,11 @@ font-size:10px;color:#5b6779}
 .camAsp button{font-size:10px;padding:3px 2px}
 .camAsp button.on{background:#185fa5;color:#fff;border-color:#185fa5}
 #aspBox{position:absolute;inset:0;pointer-events:none;z-index:6;display:none}
-#aspFrame{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
-border:1px dashed rgba(255,255,255,.92);
-box-shadow:0 0 0 9999px rgba(10,17,28,.62)}   /* 框外压暗：画幅裁切后框外不再绘制，深一点更像「取景器」 */
+#aspFrame{position:absolute;left:0;top:0;z-index:2;
+border:1px dashed rgba(255,255,255,.92)}
+/* 框外压暗：用 4 块实心遮罩拼。超大 spread 的 box-shadow（0 0 0 9999px）
+   在部分显卡 / 无头浏览器下会被整块丢掉，截出来框外是白的，不稳定 */
+.aspMask{position:absolute;left:0;top:0;background:rgba(10,17,28,.62)}   /* 框外压暗：画幅裁切后框外不再绘制，深一点更像「取景器」 */
 #camBody.hide{display:none}
 @media (max-height:780px){.camTitle{margin:6px 0 1px;padding-top:5px}
 .camList{max-height:60px}.camGrid{gap:1px 5px}}
@@ -394,9 +403,11 @@ font-size:13px;font-weight:500;color:#243042}
 .trkSub{font-size:11px;color:#8b96a6;margin-bottom:4px}
 .trkDot{display:inline-block;width:9px;height:9px;border-radius:50%;
 background:var(--trk,#ff4d1a);margin-right:5px}
+/* 内边距用 em：字号随镜头放大时，盒子/圆角一起长大，不会出现「字大了但边框还贴着脸」。
+   line-height 写死 1.2，导出 canvas 的换行/盒高按同一套算，网页预览 = 成片 */
 .lbl{position:absolute;transform:translate(-50%,-100%);pointer-events:none;white-space:nowrap;transition:opacity .25s linear;
 background:rgba(255,255,255,.92);border:1px solid var(--trk,#ff8a63);color:#9d3412;font-size:11px;
-padding:2px 6px;border-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,.12)}
+line-height:1.2;padding:.18em .52em;border-radius:.3em;box-shadow:0 1px 4px rgba(0,0,0,.12)}
 .lbl.end{border-color:#185fa5;color:#185fa5}
 /* 轨迹样式调参台 */
 .panel{max-height:calc(100vh - 32px);overflow-y:auto}
@@ -425,7 +436,11 @@ color:#5b6779;background:#f7f9fc;border:1px solid #e2e7ef;border-radius:4px;
 padding:4px 5px;margin-top:5px}
 /* 途径点编辑台 */
 .wpTitle{margin:10px 0 2px;padding-top:8px;border-top:1px solid #e9edf3;
-font-size:12px;font-weight:500;color:#243042}
+font-size:12px;font-weight:500;color:#243042;
+display:flex;align-items:center;justify-content:space-between;gap:6px}
+.wpShow{display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:400;
+color:#5b6779;cursor:pointer;user-select:none;white-space:nowrap}
+.wpShow input{margin:0;width:12px;height:12px}
 .wpHint{font-size:9px;color:#9aa5b4;line-height:1.35;margin-bottom:4px}
 .wpBar{display:flex;gap:4px;align-items:center;margin:5px 0}
 .wpBar button{flex:1;font-size:11px;padding:4px 2px}
@@ -436,8 +451,10 @@ border-radius:4px;padding:3px 4px}
 #wpPick.active:hover{background:#e6440f}
 .wpList{max-height:126px;overflow-y:auto;border:1px solid #e9edf3;
 border-radius:5px;background:#fbfcfe;margin:4px 0}
-.wpRow{display:grid;grid-template-columns:15px 1fr 26px 17px;gap:2px 3px;
+.wpRow{display:grid;grid-template-columns:15px 1fr 14px 26px 17px;gap:2px 3px;
 align-items:center;padding:3px 5px;border-bottom:1px solid #eff2f7}
+.wpRow.off .wpName,.wpRow.off .wpMeta{opacity:.42}
+.wpRow.off .wpColor{opacity:.35}
 .wpRow:last-child{border-bottom:0}
 .wpNo{font-size:10px;color:#8b96a6;text-align:center}
 .wpName{width:100%;min-width:0;font:11px system-ui,"Microsoft YaHei",sans-serif;
@@ -445,6 +462,9 @@ border:1px solid transparent;background:transparent;padding:1px 2px;border-radiu
 .wpName:focus{border-color:#2681ff;background:#fff;outline:none}
 .wpColor{width:24px;height:19px;padding:0;border:1px solid #d9e1ec;
 border-radius:3px;background:none;cursor:pointer}
+.wpOn{border:0;background:none;cursor:pointer;padding:0;line-height:1;
+font-size:12px;color:#2681ff}
+.wpRow.off .wpOn{color:#c3cbd6}
 .wpDel{border:0;background:none;color:#a5afbd;cursor:pointer;
 font-size:15px;padding:0;line-height:1}
 .wpDel:hover{color:#d33}
@@ -453,11 +473,24 @@ font-size:15px;padding:0;line-height:1}
 .wpFoot{display:flex;align-items:center;gap:6px;font-size:10px;color:#5b6779;margin-top:2px}
 .wpFoot .chk{font-size:10px;gap:3px}
 .wpFoot input[type=range]{flex:1;min-width:0;accent-color:#2681ff}
+.wpFoot input[type=number]{width:54px;font:11px system-ui;border:1px solid #d9e1ec;
+border-radius:4px;padding:2px 4px;text-align:right}
 #wpSizeVal,#wpFsVal{font-variant-numeric:tabular-nums;min-width:32px;text-align:right}
 .wpBtns{display:flex;gap:5px;margin-top:5px}
 .wpBtns button{font-size:10px;padding:4px 3px;white-space:nowrap}
+/* 小窗预览：模拟「3D 画面缩进剪映小窗」后的真实字号，判断字够不够大 */
+#pipWrap{position:fixed;right:18px;bottom:18px;z-index:70;background:#080b10;
+border:1px solid #2b3444;border-radius:8px;padding:8px;box-shadow:0 10px 40px rgba(0,0,0,.5)}
+#pipWrap canvas{display:block;border-radius:2px}
+.pipBar{display:flex;align-items:center;gap:5px;margin-bottom:7px;font-size:11px;color:#c9d4e4}
+.pipBar b{font-weight:600;color:#fff}
+.pipBar .pipNote{color:#7d8ba0;font-size:10px;margin-right:auto}
+.pipBar button{font-size:10px;padding:3px 6px;border:1px solid #3b4658;background:#161d28;
+color:#c9d4e4;border-radius:4px;cursor:pointer}
+.pipBar button:hover{background:#222c3b;color:#fff}
+/* 字号只由 label() 的行内 font-size（= WP.fs 基准）决定，这里不要再写死 */
 .lbl.wp{font-weight:500;background:rgba(255,255,255,.95);border-width:1.5px;
-box-shadow:0 2px 7px rgba(0,0,0,.18);font-size:12px}
+box-shadow:0 2px 7px rgba(0,0,0,.18)}
 .lbl.wp.bold{font-weight:800;letter-spacing:.2px}
 /* 矮窗口：收紧行距，保证新增的「离地 / 自动 / 落影」仍在首屏 */
 @media (max-height:780px){
@@ -488,8 +521,8 @@ CTRL_HTML = """
 <label class="chk" title="默认关闭：被山体挡住的标签自动隐藏。低角度掠视时远近标签不会挤成一团；要看全貌再打开"><input type="checkbox" id="wpOcc">标签透视（被山挡也显示）</label>
 <label class="chk" title="低角度侧视时开启会把轨迹强行画在山体前面，看起来像腾空；建议保持关闭"><input type="checkbox" id="xray">轨迹穿透显示（看全貌）</label>
 <div class="sep"></div>
-<div class="wpTitle">途径点（<span id="wpCount">0 个</span>）</div>
-<div class="wpHint" id="wpHint">点「拾取」后在橙色轨迹上点击，或按里程添加</div>
+<div class="wpTitle"><span>途径点（<span id="wpCount">0 个</span>）</span><label class="wpShow" title="一键显示 / 隐藏所有途径点标记；只影响画面，运镜模板和导出数据照旧"><input type="checkbox" id="wpShow" checked>显示</label></div>
+<div class="wpHint" id="wpHint">点「拾取」后在橙色轨迹上点击（附近自动吸附），或按里程添加</div>
 <div class="wpBar">
   <button id="wpPick">拾取</button>
   <input type="number" id="wpKm" min="0" step="0.05" value="1.00" title="里程 km">
@@ -504,12 +537,25 @@ CTRL_HTML = """
 </div>
 <div class="wpFoot">
   <span>标签字号</span>
-  <input type="range" id="wpFs" min="9" max="26" step="1" value="12">
-  <span id="wpFsVal">12 px</span>
+  <input type="range" id="wpFs" min="9" max="48" step="1" value="34">
+  <span id="wpFsVal">34 px</span>
+</div>
+<div class="wpFoot">
+  <label class="chk" title="全览保持基准字号；只有相机推近到「放大距离」以内才放大，且只放最近的 1 个标签"><input type="checkbox" id="lblAuto" checked>随镜头放大</label>
+  <input type="range" id="lblK" min="1" max="4" step="0.5" value="3" title="近景最大放大倍数">
+  <span id="lblKVal">3.0×</span>
+</div>
+<div class="wpFoot" title="前一个数：这个距离及更远 = 基准字号；后一个数：推到这么近 = 最大倍数；中间平滑过渡">
+  <span>放大距离</span>
+  <input type="number" id="lblD0" min="300" max="6000" step="50" value="800">
+  <span>→</span>
+  <input type="number" id="lblD1" min="120" max="4000" step="20" value="420">
+  <span>m</span>
 </div>
 <div class="wpBtns"><button id="wpEven" title="按 1/4、1/2、3/4 里程各加一个点">等分 3 点</button>
   <button id="wpGeo" title="导出含经纬度/里程/高程的 GeoJSON">导出 JSON</button>
-  <button id="wpClear">清空</button></div>
+  <button id="wpClear">清空</button>
+  <button id="pipSim" title="按成片小窗的比例预览（3D 只占 1/3–1/2 宽），确认真实字号还看不看得清">小窗</button></div>
 """
 
 CAM_HTML = """
@@ -533,17 +579,27 @@ CAM_HTML = """
 </div>
 <div class="camPresets wrap">
   <label class="chk" title="轨迹从起点逐段长出（渲染成片也会带上）"><input type="checkbox" id="growOn">轨迹生长</label>
-  <span class="camMini">起</span><input type="number" id="growS" min="0" max="59" step="0.1" value="0">
-  <span class="camMini">秒 用时</span><input type="number" id="growD" min="0.2" max="30" step="0.1" value="4">
+  <span class="camMini">起</span><input type="number" id="growS" min="0" max="599" step="0.1" value="0">
+  <span class="camMini">秒 用时</span><input type="number" id="growD" min="0.2" max="600" step="0.1" value="4">
   <span class="camMini">秒</span>
 </div>
+<div class="growSpd" title="轨迹从左到右长完需要多久：0.5× 最慢，4× 最快，铺满=恰好在片尾走完">
+  <button data-gspd="0.5">0.5×</button>
+  <button data-gspd="1">1×</button>
+  <button data-gspd="2">2×</button>
+  <button data-gspd="3">3×</button>
+  <button data-gspd="4">4×</button>
+  <button id="growFill">铺满</button>
+</div>
+<div class="camMini" id="growSpdV" style="line-height:1.3;margin:-2px 0 3px"></div>
 <div class="camPlayBar">
   <button id="camPlayBtn" title="按分镜时间轴 1× 实时播放镜头预览（只在页面预览，不出帧）">▶ 播放预览</button>
   <label class="chk" title="播到结尾自动回到开头继续播"><input type="checkbox" id="camLoop">循环</label>
 </div>
 <div class="camAsp"><span>画幅</span>
   <button data-a="0" class="on">关</button><button data-a="916">9:16</button>
-  <button data-a="169">16:9</button></div>
+  <button data-a="169">16:9</button>
+  <button id="aspSolo" title="收起两侧面板，取景框用满窗口；再点一次恢复">沉浸</button></div>
 <div id="camBody" class="hide">
 <div class="camHint">「记到」填秒数（超出总时长自动延长）→ 调好画面 → 记录当前画面；播放只预览、不出帧</div>
 <div class="camGrid">
@@ -558,12 +614,12 @@ CAM_HTML = """
 <div class="camBtns camRecBar">
   <button id="camAdd" title="把屏幕上当前看到的机位记到左边指定的时刻，并自动把数值读回滑块">＋ 记录当前画面</button>
   <span class="camRecAt">记到
-    <input type="number" id="camRecT" min="0" max="60" step="0.05" value="0" title="记录到这一秒；可以填超过总时长的时刻，会自动延长总时长">
+    <input type="number" id="camRecT" min="0" max="600" step="0.05" value="0" title="记录到这一秒；可以填超过总时长的时刻，会自动延长总时长">
     <span>s</span></span>
 </div>
 <div class="camDurBar">
   <span>总时长</span>
-  <input type="number" id="camDur" min="3" max="60" step="0.5" value="10" title="分镜总时长（秒）；缩短会等比压缩已有关键帧，延长则保留原节奏、末尾留空档">
+  <input type="number" id="camDur" min="3" max="600" step="0.5" value="10" title="分镜总时长（秒）；缩短会等比压缩已有关键帧，延长则保留原节奏、末尾留空档">
   <span>s</span>
   <button id="camRead" title="只把当前机位读回上方滑块，不记录分镜">读回滑块</button>
 </div>
@@ -654,8 +710,10 @@ function expTotal(){return Math.max(1,Math.round(DUR*EXP.fps));}
 function expHintText(){
   if(!el('expHint'))return;
   const z=expSize();
-  el('expHint').textContent=(+DUR).toFixed(1)+' s · '+expTotal()+' 帧 · '+
-    z.W+'×'+z.H+' · '+EXP.fps+' fps';
+  const n=expTotal();
+  el('expHint').textContent=(+DUR).toFixed(1)+' s · '+n+' 帧 · '+
+    z.W+'×'+z.H+' · '+EXP.fps+' fps'+(n>6000?' · 帧数偏多，建议降 fps 或缩短':'');
+  el('expHint').style.color=n>6000?'#c04a1e':'';
 }
 window.__expHint=expHintText;      /* syncCamUI 在初始化阶段会调，先挂窗口避免 TDZ */
 let EXPING=false, EXPCANCEL=false, XR=null;   /* XR：导出专用离屏渲染器 */
@@ -679,6 +737,19 @@ function expRoundRect(c,x,y,w,h,r){
 }
 /* 标签重画：可见性 / 遮挡 / 生长 / 撞车避让规则与 updateLabels 保持一致，
    区别只是投影基准换成导出分辨率（W,H），字号按高度等比放大 */
+/* 标签样式缓存：逐帧 getComputedStyle 太慢。字号取基准值，逐帧再乘镜头联动系数 */
+function expLabelStyles(){
+  const m=new Map();
+  for(const o of labels){
+    const cs=getComputedStyle(o.el);
+    m.set(o,{text:o.el.textContent||'',color:cs.color||'#9d3412',
+      border:cs.borderTopColor||'#ff8a63',
+      bold:(parseInt(cs.fontWeight,10)||400)>=600,
+      fs:WP.fs,
+      bw:parseFloat(cs.borderTopWidth)||1});
+  }
+  return m;
+}
 function expDrawLabels(ctx,W,H,scl,lstyle){
   if(!el('showTrk').checked)return;
   const sy=group.scale.y||1, cand=[];
@@ -698,26 +769,31 @@ function expDrawLabels(ctx,W,H,scl,lstyle){
   }
   if(!cand.length)return;
   cand.sort(function(a,b){return a.d-b.d;});
+  /* 字号与页面同一套（全览 1×，最近 1–2 个放大），每帧按当前相机算。
+     先把屏幕坐标和「是否在画面内」算出来，画外的标签不参与字号窗口 */
+  for(const c of cand){
+    c.sx=(c.v.x*.5+.5)*W; c.sy=(-c.v.y*.5+.5)*H;
+    c.on=(c.sx>0&&c.sx<W&&c.sy>0&&c.sy<H);
+  }
+  const fsM=lblSizeMap(cand);
   const placed=[];
   ctx.textAlign='center';ctx.textBaseline='middle';
   for(const c of cand){
-    const st=c.st, f=st.fs*scl;
+    const st=c.st, f=(fsM.get(c)||WP.fs)*scl;
     ctx.font=(st.bold?'800 ':'500 ')+f+'px system-ui,"Microsoft YaHei",sans-serif';
-    const bw=ctx.measureText(st.text).width+12*scl+2*st.bw*scl;
-    const bh=f*1.65+6*scl+2*st.bw*scl;
-    const x=(c.v.x*.5+.5)*W;
+    const bw=ctx.measureText(st.text).width+f*1.04+2*st.bw*scl;
+    const bh=f*1.56+2*st.bw*scl;
+    let x=(c.v.x*.5+.5)*W;          /* 下面按 hw 往里收（贴边标签不能切字），必须是 let */
     let y=(-c.v.y*.5+.5)*H-6*scl;
     if(x<-60*scl||x>W+60*scl||y<-60*scl||y>H+60*scl)continue;
-    const hw=bw/2+8*scl;
-    /* 与页面 updateLabels 同一规则：贴边的标签往里收，边框不切字 */
-    x=Math.max(hw,Math.min(W-hw,x));
-    for(let k=0;k<2;k++){
-      if(!placed.some(function(p){return Math.abs(p.x-x)<p.hw+hw&&Math.abs(p.y-y)<17*scl;}))break;
-      y-=20*scl;
-    }
-    if(placed.some(function(p){return Math.abs(p.x-x)<p.hw+hw&&Math.abs(p.y-y)<17*scl;}))continue;
-    y=Math.max(bh+2*scl,Math.min(H-4*scl,y));
-    placed.push({x:x,y:y,hw:hw});
+    const hwB=bw/2, hw=hwB+8*scl;
+    /* 与页面同一规则：盒子压到边框直接不画（不往里夹，避免标签脱开落点） */
+    if(x-hwB<0 || x+hwB>W || y>H || y-bh<0)continue;
+    const hit=function(){return placed.some(function(p){
+      return Math.abs(p.x-x)<p.hw+hw&&Math.abs(p.y-y)<Math.max(p.h,bh);});};
+    for(let k=0;k<3;k++){ if(!hit())break; y-=bh+4*scl; }
+    if(hit() || y-bh<0)continue;
+    placed.push({x:x,y:y,hw:hw,h:bh});
     const left=x-bw/2, top=y-bh;
     ctx.save();
     ctx.shadowColor='rgba(0,0,0,.12)';ctx.shadowBlur=4*scl;ctx.shadowOffsetY=scl;
@@ -803,15 +879,7 @@ async function expRun(opt){
     const ctx=comp.getContext('2d',{alpha:false});
     const scl=z.H/1080;
     /* 标签样式先缓存一份：逐帧 getComputedStyle 太慢 */
-    const lstyle=new Map();
-    for(const o of labels){
-      const cs=getComputedStyle(o.el);
-      lstyle.set(o,{text:o.el.textContent||'',color:cs.color||'#9d3412',
-        border:cs.borderTopColor||'#ff8a63',
-        bold:(parseInt(cs.fontWeight,10)||400)>=600,
-        fs:parseFloat(cs.fontSize)||11,
-        bw:parseFloat(cs.borderTopWidth)||1});
-    }
+    const lstyle=expLabelStyles();
     window.__exporting=true;        /* 让 rAF 循环让位，逐帧由这里驱动 */
     let lastPaint=0, tStart=0;      /* tStart：第一帧之后才算，别把着色器编译算进帧率 */
     for(let i=0;i<total;i++){
@@ -1057,7 +1125,7 @@ try{
     if(sv.cam&&CAMFIELDS.every(k=>isFinite(+sv.cam[k])))CAM=sv.cam;
     if(Array.isArray(sv.shots))SHOTS=sv.shots.filter(
       o=>o&&isFinite(+o.t)&&CAMFIELDS.every(k=>isFinite(+o[k])));
-    if(isFinite(+sv.dur))DUR=Math.min(60,Math.max(3,+sv.dur));
+    if(isFinite(+sv.dur))DUR=Math.min(600,Math.max(3,+sv.dur));
     if(['0','916','169'].indexOf(sv.asp)>=0)ASP=sv.asp;
     if(typeof sv.collapsed==='boolean')COLLAPSED=sv.collapsed;
   }
@@ -1065,7 +1133,7 @@ try{
 if(QP.has('cam')){const c=unpackCam(QP.get('cam'));if(c)CAM=c;}
 if(QP.has('shots'))SHOTS=unpackShots(QP.get('shots'));
 if(QP.has('dur')){const n=parseFloat(QP.get('dur'));
-  if(isFinite(n))DUR=Math.min(60,Math.max(3,n));}
+  if(isFinite(n))DUR=Math.min(600,Math.max(3,n));}
 if(QP.has('asp')&&['0','916','169'].indexOf(QP.get('asp'))>=0)ASP=QP.get('asp');
 /* 垂直夸张 ex=（0.5–4）与起终点开关 ends=0/1 也进参数串，
    保证逐帧渲染出来的坡度和页面上一模一样 */
@@ -1081,7 +1149,10 @@ if(QP.has('mk'))el('showMk').checked=QP.get('mk')!=='0';   /* 标注点（KML �
 CAM_UI = r"""
 /* ---------- 镜头控制 UI（右侧面板） ---------- */
 const _aspBox=document.createElement('div');
-_aspBox.id='aspBox';_aspBox.innerHTML='<div id="aspFrame"></div>';
+_aspBox.id='aspBox';
+_aspBox.innerHTML='<div class="aspMask" id="aspM0"></div><div class="aspMask" id="aspM1"></div>'
+  +'<div class="aspMask" id="aspM2"></div><div class="aspMask" id="aspM3"></div>'
+  +'<div id="aspFrame"></div>';
 document.body.appendChild(_aspBox);
 function saveCam(){
   try{localStorage.setItem(CKEY,JSON.stringify(
@@ -1098,12 +1169,25 @@ function camValues(){
    框里看到的是 16:9 取景被遮掉两侧，模型就「超出屏幕」，而导出又是真 9:16，预览与成片对不上。
    现在把渲染视口也收进框内、camera.aspect 同步，框内像素 = 导出的那一帧。 */
 let CUTF=null;                 /* {x,y,w,h} 渲染视口（GL 坐标，原点左下） */
+/* 页面预览的可见区（左右面板之间）：标签压到面板边缘就隐藏，不能钻到面板底下 */
+const VIEW={l:0,r:innerWidth};
+/* 面板占位：display:none（video.html / 单文件版导出页）时 rect 全是 0，
+   必须当成「没有面板」，否则可用宽度会被算成 0，标签会整体消失 */
+function panelInsets(){
+  const lp=document.querySelector('.panel.info'), rp=document.querySelector('.panel.ctrl');
+  const lr=lp?lp.getBoundingClientRect():null, rr=rp?rp.getBoundingClientRect():null;
+  return {L:(lr&&lr.width>0)?Math.max(0,Math.min(innerWidth,lr.right)):0,
+          R:(rr&&rr.width>0)?Math.max(0,Math.min(innerWidth,innerWidth-rr.left)):0};
+}
 function applyAspect(){
   const box=el('aspBox'), frame=el('aspFrame');
   if((ASP!=='169'&&ASP!=='916')||window.__frameMode){
     /* 自由比例 / 视频逐帧页：整窗渲染（视频页窗口本身就是成片尺寸，再裁一圈会带黑边） */
     box.style.display='none';
     CUTF=null;
+    /* 自由比例也记一下面板占位：标签的边缘判定要用（面板收起 / 不显示 → 0） */
+    const pi=panelInsets();
+    VIEW.l=Math.min(pi.L,innerWidth-120); VIEW.r=Math.max(VIEW.l+120,innerWidth-pi.R);
     renderer.setScissorTest(false);
     renderer.setViewport(0,0,innerWidth,innerHeight);
     camera.aspect=innerWidth/Math.max(1,innerHeight);
@@ -1112,14 +1196,29 @@ function applyAspect(){
   }
   box.style.display='block';
   const aw=ASP==='916'?9:16, ah=ASP==='916'?16:9;
-  const mw=innerWidth-32,mh=innerHeight-32;
-  let w=Math.min(mw,mh*aw/ah), h=w*ah/aw;
-  if(h>mh){h=mh;w=h*aw/ah;}
+  /* 可用区域扣掉两侧面板实际占的宽度：框不被面板盖住，框内就是成片画面。
+     面板收起时 rect 跑到屏幕外，L/R 自动变 0，框跟着放大。 */
+  const piA=panelInsets(), L=piA.L, R=piA.R;
+  const GAP=14;
+  const availW=Math.max(260,innerWidth-L-R-GAP*2), availH=Math.max(180,innerHeight-GAP*2);
+  let w=Math.min(availW,availH*aw/ah), h=w*ah/aw;
+  if(h>availH){h=availH;w=h*aw/ah;}
   w=Math.round(w);h=Math.round(h);
+  const x=Math.round(L+GAP+(availW-w)/2), ty=Math.round(GAP+(availH-h)/2);
+  frame.style.left=x+'px';frame.style.top=ty+'px';
   frame.style.width=w+'px';frame.style.height=h+'px';
+  /* 4 块遮罩围出取景框：上 / 下 / 左 / 右，框内不盖任何东西 */
+  const setM=function(id,mx,my,mw,mh){
+    const m=el(id); if(!m)return;
+    m.style.left=mx+'px'; m.style.top=my+'px';
+    m.style.width=Math.max(0,mw)+'px'; m.style.height=Math.max(0,mh)+'px';
+  };
+  setM('aspM0',0,0,innerWidth,ty);
+  setM('aspM1',0,ty+h,innerWidth,innerHeight-ty-h);
+  setM('aspM2',0,ty,x,h);
+  setM('aspM3',x+w,ty,innerWidth-x-w,h);
   /* CUTF 用 CSS 语义（y = 距顶），标签定位和视口两处都要用；
      WebGL 的 y 原点在左下，setViewport 时再换算 */
-  const x=Math.round((innerWidth-w)/2), ty=Math.round((innerHeight-h)/2);
   CUTF={x:x,y:ty,w:w,h:h};
   camera.aspect=w/h;
   camera.updateProjectionMatrix();
@@ -1195,7 +1294,7 @@ function renderShotList(){
   if(!SHOTS.length){box.innerHTML='<div class="wpEmpty">无关键帧 · 调好画面点「记录当前画面」，或用「环绕推近」</div>';return;}
   box.innerHTML=SHOTS.map((s,i)=>
     '<div class="camRow"><input type="number" class="camT" data-i="'+i+
-    '" min="0" max="60" step="0.05" value="'+(+s.t).toFixed(2)+
+    '" min="0" max="600" step="0.05" value="'+(+s.t).toFixed(2)+
     '"><span class="camGo" data-i="'+i+'" title="跳到这一帧预览">az '+azN(s.az).toFixed(0)+
     '° el '+s.el.toFixed(0)+'° r '+s.r.toFixed(0)+
     '</span><button class="camOvr" data-i="'+i+'" title="用当前画面覆盖这一帧">↻</button>'+
@@ -1228,6 +1327,7 @@ function syncCamUI(){
   el('camPlay').max=DUR;el('camPlay').value=PLAY;
   renderShotList();applyAspect();refreshParam();playUi();saveCam();
   if(window.__expHint)window.__expHint();      /* 时长 / 分镜变了，导出提示跟着更新 */
+  if(window.__syncGrowUI)window.__syncGrowUI(); /* 片长变了，「铺满 / 片尾到几成」跟着变 */
 }
 function setCam(c){
   CAM=c;
@@ -1570,21 +1670,57 @@ el('growOn').onchange=function(e){
 };
 el('growS').oninput=function(e){
   const v=+e.target.value;if(!isFinite(v))return;
-  GRW.s=Math.max(0,Math.min(59,v));saveGrow();saveStyle();syncGrow();
+  GRW.s=Math.max(0,Math.min(599,v));saveGrow();saveStyle();syncGrow();
 };
 el('growD').oninput=function(e){
   const v=+e.target.value;if(!isFinite(v))return;
-  GRW.d=Math.max(.2,Math.min(30,v));saveGrow();saveStyle();syncGrow();
+  GRW.d=Math.max(.2,Math.min(600,v));saveGrow();saveStyle();syncGrow();
 };
 el('growOn').checked=GRW.on;
 el('growS').value=GRW.s; el('growD').value=GRW.d;
+
+/* 生长速度：1× = 全程 6 s（3 km 环线的观感基准）。按钮直接改「用时」，
+   旁边实时显示「多少秒走完 · 等效倍率 · 片尾能走到百分之几」。 */
+const GROW_BASE=6.0;
+function growSpd(){return GROW_BASE/Math.max(.2,GRW.d);}
+function setGrowD(d){
+  GRW.d=Math.max(.2,Math.min(600,d));
+  el('growD').value=+GRW.d.toFixed(2);
+  saveGrow();saveStyle();syncGrow();syncGrowUI();
+}
+function syncGrowUI(){
+  const v=el('growSpdV'); if(!v)return;
+  const end=GRW.s+GRW.d;
+  const cover=DUR>0?Math.min(1,Math.max(0,(DUR-GRW.s)/Math.max(.1,GRW.d))):0;
+  const k=growSpd();
+  const ks=k>=1?k.toFixed(1)+'×':(k>=0.1?k.toFixed(2)+'×':'<0.1×');
+  v.textContent=GRW.d.toFixed(1)+' s 走完 · 约 '+ks
+    +(end>DUR+0.02?' · 片尾只到 '+(cover*100).toFixed(0)+'%':' · 片尾走完');
+  v.style.color=end>DUR+0.02?'#c04a1e':'#8b96a6';
+  if(el('growFill')){
+    el('growFill').classList.toggle('on',
+      Math.abs(GRW.d-Math.max(.5,DUR-GRW.s))<0.15);
+  }
+  document.querySelectorAll('[data-gspd]').forEach(function(b){
+    b.classList.toggle('on',Math.abs(growSpd()-+b.dataset.gspd)<0.06);
+  });
+}
+document.querySelectorAll('[data-gspd]').forEach(function(b){
+  b.onclick=function(){setGrowD(GROW_BASE/(+b.dataset.gspd));};
+});
+if(el('growFill'))el('growFill').onclick=function(){
+  setGrowD(Math.max(.5,DUR-GRW.s));
+  flashRec('轨迹铺满全片：'+GRW.d.toFixed(1)+' s 走完');
+};
+window.__syncGrowUI=syncGrowUI;   /* syncCamUI 初始化阶段会调，先挂窗口避免 TDZ */
+syncGrowUI();
 
 /* 记录 = 所见即所得：readCam() 读屏幕上真实机位（鼠标拖拽、滑块精调、
    播放头插值都算），并顺手同步回滑块，不用再先点「拾取当前视角」。
    时刻取「记到」输入框：可超过当前总时长，此时自动延长总时长。 */
 function recTime(){
   const v=parseFloat(el('camRecT').value);
-  return isFinite(v)?Math.max(0,Math.min(60,+v.toFixed(2))):+PLAY.toFixed(2);
+  return isFinite(v)?Math.max(0,Math.min(600,+v.toFixed(2))):+PLAY.toFixed(2);
 }
 function recordCurrent(){
   const c=readCam(), t=recTime();
@@ -1609,7 +1745,7 @@ el('camRestore').onclick=()=>{
 el('camDur').onchange=e=>{
   const v=parseFloat(e.target.value);
   if(!isFinite(v)){syncCamUI();return;}
-  const nd=Math.min(60,Math.max(3,v)), old=DUR, changed=Math.abs(nd-DUR)>1e-6;
+  const nd=Math.min(600,Math.max(3,v)), old=DUR, changed=Math.abs(nd-DUR)>1e-6;
   let shrink=false;
   if(changed){
     if(nd<old){
@@ -1653,6 +1789,39 @@ document.querySelectorAll('.camAsp button').forEach(b=>b.onclick=()=>{
   if(touched)flashRec('分镜已按 '+(ASP==='916'?'9:16':(ASP==='169'?'16:9':'窗口比例'))+' 重算远景距离');
 });
 window.addEventListener('resize',applyAspect);
+
+/* 两侧面板收 / 放会改变可用宽度：等过渡（0.22 s）结束再重算取景框。
+   直接监听 body 的 class，不必改模板里那套面板脚本。 */
+(function(){
+  let pl=document.body.classList.contains('hideL'), pr=document.body.classList.contains('hideR');
+  new MutationObserver(function(){
+    const nl=document.body.classList.contains('hideL'), nr=document.body.classList.contains('hideR');
+    if(nl===pl&&nr===pr)return;
+    pl=nl;pr=nr;
+    clearTimeout(window.__aspT);
+    window.__aspT=setTimeout(applyAspect,260);
+    syncAspSolo();
+  }).observe(document.body,{attributes:true,attributeFilter:['class']});
+})();
+
+/* 画幅行「沉浸」：等价于点两下侧边把手，共用它们的记忆与把手显隐 */
+function syncAspSolo(){
+  const b=el('aspSolo'); if(!b)return;
+  const both=document.body.classList.contains('hideL')&&document.body.classList.contains('hideR');
+  b.textContent=both?'退出沉浸':'沉浸';
+  b.classList.toggle('on',both);
+}
+if(el('aspSolo'))el('aspSolo').onclick=function(){
+  const both=document.body.classList.contains('hideL')&&document.body.classList.contains('hideR');
+  for(const id of ['tgL','tgR']){
+    const t=el(id); if(!t)continue;
+    const hidden=document.body.classList.contains(id==='tgL'?'hideL':'hideR');
+    if(both?hidden:!hidden)t.click();
+  }
+  syncAspSolo();
+  setTimeout(applyAspect,260);
+};
+syncAspSolo();
 el('camToggle').onclick=()=>{
   const b=el('camBody');b.classList.toggle('hide');
   el('camToggle').textContent=b.classList.contains('hide')?'展开':'收起';
@@ -1779,17 +1948,38 @@ function wpUnpack(s){
   }
   return out;
 }
-function saveWP(){try{localStorage.setItem(WKEY,JSON.stringify(WP));}catch(e){}}
-const WP = {size:WDEF.size, fs:WDEF.fs, label:WDEF.label, occ:false, bold:false, list:[]};
+function saveWP(){try{localStorage.setItem(WKEY,JSON.stringify(Object.assign({},WP,
+  {lauto:LBL.auto,lk:LBL.kMax,ln:LBL.near,
+   ld0:LBL.d0,ld1:LBL.d1,lblv:3})));}catch(e){}}
+/* 标签字号联动：全览 = 基准字号，镜头推近按距离放大（只放大最近的 near 个）。
+   ref 是「全览相机距离」，按模型对角线取，切画幅/换分辨率都不会变。 */
+/* near=1：只给离镜头最近的那一个吃满放大；d0/d1：放大起止距离（m）。
+   d0 及更远 = 基准字号，d1 及更近 = 上限，中间 smoothstep 过渡。 */
+const LBL={auto:true,kMax:3,near:1,d0:800,d1:420};
+const WP = {size:WDEF.size, fs:WDEF.fs, label:WDEF.label, occ:false, bold:false, show:true, list:[]};
 try{
   const sw=JSON.parse(localStorage.getItem(WKEY)||'null');
   if(sw && Array.isArray(sw.list)){
     WP.list=sw.list.map(cleanWP).filter(Boolean);
     if(isFinite(+sw.size))WP.size=Math.min(30,Math.max(4,+sw.size));
-    if(isFinite(+sw.fs))WP.fs=Math.min(26,Math.max(9,+sw.fs));
+    /* 老存档（lblv<2）里的 fs 是旧的 9–26 小字号，直接沿用会让新基准失效，
+       按新默认值起，免得用户升级后仍看到 12 px */
+    if(+sw.lblv>=2 && isFinite(+sw.fs))WP.fs=Math.min(48,Math.max(9,+sw.fs));
     if(typeof sw.label==='boolean')WP.label=sw.label;
     if(typeof sw.occ==='boolean')WP.occ=sw.occ;
     if(typeof sw.bold==='boolean')WP.bold=sw.bold;
+    if(typeof sw.show==='boolean')WP.show=sw.show;
+    if(+sw.lblv>=2){
+      if(typeof sw.lauto==='boolean')LBL.auto=sw.lauto;
+      if(isFinite(+sw.lk))LBL.kMax=Math.min(4,Math.max(1,+sw.lk));
+    }
+    /* lblv<3 的存档是「旧的全距离放大」，near/起止距离一律按新默认起 */
+    if(+sw.lblv>=3){
+      if(isFinite(+sw.ln))LBL.near=Math.min(9,Math.max(1,Math.round(+sw.ln)));
+      if(isFinite(+sw.ld0))LBL.d0=Math.min(6000,Math.max(300,+sw.ld0));
+      if(isFinite(+sw.ld1))LBL.d1=Math.min(4000,Math.max(120,+sw.ld1));
+      lblFixDist();
+    }
   }
 }catch(e){}
 if(QP.has('wp')){
@@ -1797,11 +1987,23 @@ if(QP.has('wp')){
   if(QP.has('wpsz')){const n=parseFloat(QP.get('wpsz'));
     if(isFinite(n))WP.size=Math.min(30,Math.max(4,n));}
   if(QP.has('wpfs')){const n=parseFloat(QP.get('wpfs'));
-    if(isFinite(n))WP.fs=Math.min(26,Math.max(9,n));}
+    if(isFinite(n))WP.fs=Math.min(48,Math.max(9,n));}
   if(QP.has('wplbl'))WP.label=QP.get('wplbl')!=='0';
   if(QP.has('wpocc'))WP.occ=QP.get('wpocc')!=='0';
   if(QP.has('wpb'))WP.bold=QP.get('wpb')!=='0';
 }
+if(QP.has('wpshow'))WP.show=QP.get('wpshow')!=='0'&&QP.get('wpshow')!=='false';
+/* lblk：近景放大上限，0 = 关闭联动；lbln：只放大最近的 N 个 */
+if(QP.has('lblk')){const n=parseFloat(QP.get('lblk'));
+  if(isFinite(n)){LBL.auto=n>0;LBL.kMax=Math.min(4,Math.max(1,n||1));}}
+if(QP.has('lbln')){const n=parseFloat(QP.get('lbln'));
+  if(isFinite(n))LBL.near=Math.min(9,Math.max(1,Math.round(n)));}
+/* lbld0/lbld1：放大起始 / 到底距离（m） */
+if(QP.has('lbld0')){const n=parseFloat(QP.get('lbld0'));
+  if(isFinite(n))LBL.d0=Math.min(6000,Math.max(300,n));}
+if(QP.has('lbld1')){const n=parseFloat(QP.get('lbld1'));
+  if(isFinite(n))LBL.d1=Math.min(4000,Math.max(120,n));}
+lblFixDist();
 function cleanHex(v,d){v=String(v).replace(/^#/,'');
   return /^[0-9a-fA-F]{6}$/.test(v)?v.toLowerCase():d;}
 function cleanNum(k,v){const n=parseFloat(v),a=RANGE[k][0],b=RANGE[k][1];
@@ -1857,13 +2059,13 @@ try{
   const g=JSON.parse(localStorage.getItem('terrain_grow_v1')||'null');
   if(g){GRW.on=!!g.on;
     if(isFinite(+g.s))GRW.s=Math.max(0,Math.min(59,+g.s));
-    if(isFinite(+g.d))GRW.d=Math.max(.2,Math.min(30,+g.d));}
+    if(isFinite(+g.d))GRW.d=Math.max(.2,Math.min(600,+g.d));}
 }catch(e){}
 if(QP.has('grow'))GRW.on=QP.get('grow')!=='0';
 if(QP.has('grows')){const n=parseFloat(QP.get('grows'));
   if(isFinite(n))GRW.s=Math.max(0,Math.min(59,n));}
 if(QP.has('growd')){const n=parseFloat(QP.get('growd'));
-  if(isFinite(n))GRW.d=Math.max(.2,Math.min(30,n));}
+  if(isFinite(n))GRW.d=Math.max(.2,Math.min(600,n));}
 function saveGrow(){try{localStorage.setItem('terrain_grow_v1',JSON.stringify(GRW));}catch(e){}}
 function registerGrow(mesh){
   const g=mesh.geometry;
@@ -1901,6 +2103,9 @@ function styleParams(){
        +'&trkop='+TS.op+'&trklift='+TS.lift
        +'&trkx='+(TS.xr?1:0)+'&trkauto='+(TS.auto?1:0)+'&trkshadow='+(TS.shadow?1:0)
        +'&wp='+encodeURIComponent(wpPack())+'&wpsz='+WP.size+'&wpfs='+WP.fs
+       +'&lblk='+(LBL.auto?LBL.kMax:0)+'&lbln='+LBL.near
+       +'&lbld0='+LBL.d0+'&lbld1='+LBL.d1
+       +'&wpshow='+(WP.show?'1':'0')
        +(WP.label?'':'&wplbl=0')+(WP.occ?'&wpocc=1':'')+(WP.bold?'&wpb=1':'')
        +'&cam='+packCam(CAM)+'&shots='+packShots(SHOTS)
        +'&dur='+DUR+'&asp='+ASP
@@ -1985,9 +2190,11 @@ function renderWP(){
   const box=el('wpList');
   box.innerHTML=WP.list.length ? WP.list.map(function(o,i){
     const s=sampleAt(o.t),p=s.p;
-    return '<div class="wpRow" data-i="'+i+'">'
+    return '<div class="wpRow'+(o.on?'':' off')+'" data-i="'+i+'">'
       +'<span class="wpNo">'+(i+1)+'</span>'
       +'<input class="wpName" value="'+escTxt(o.name)+'" title="改名">'
+      +'<button class="wpOn" title="'+(o.on?'隐藏这个点':'显示这个点')+'">'
+      +(o.on?'◉':'◌')+'</button>'
       +'<input type="color" class="wpColor" value="#'+o.color+'" title="标记颜色">'
       +'<button class="wpDel" title="删除">×</button>'
       +'<span class="wpMeta">'+(s.cum/1000).toFixed(2)+' km · '
@@ -1996,9 +2203,13 @@ function renderWP(){
   el('wpCount').textContent=WP.list.length+' 个';
   el('wpSize').value=WP.size; el('wpSizeVal').textContent=WP.size+' m';
   el('wpFs').value=WP.fs; el('wpFsVal').textContent=WP.fs+' px';
+  el('lblAuto').checked=LBL.auto;
+  el('lblK').value=LBL.kMax; el('lblKVal').textContent=LBL.kMax.toFixed(1)+'×';
+  el('lblD0').value=LBL.d0; el('lblD1').value=LBL.d1;
   el('wpLbl').checked=WP.label;
   el('wpOcc').checked=WP.occ;
   el('wpBold').checked=WP.bold;
+  el('wpShow').checked=WP.show;
   el('wpKm').max=(TRKLEN/1000).toFixed(2);
   saveWP(); saveStyle();
 }
@@ -2018,6 +2229,7 @@ function addWaypoint(t,name,color){
 }
 window.__addWaypoint=addWaypoint;      /* 供自动化自检调用 */
 function buildWaypoints(){
+  if(!WP.show)return;              /* 总开关：隐藏时不建球/杆/环/标签，省一次遍历 */
   const yi=el('gpsMode').checked?2:1, xray=!!TS.xr;
   WP.list.forEach(function(o,i){
     if(!o.on)return;
@@ -2035,7 +2247,6 @@ function buildWaypoints(){
     ring.renderOrder=12;trackGroup.add(ring);WPMESH.push({m:ring,t:growT(o.t)});
     const d=label(o.name||('P'+(i+1)),p[0],y+WP.size*2.7,p[3],'wp',growT(o.t));
     d.style.borderColor='#'+o.color;d.style.color='#'+o.color;
-    d.style.fontSize=WP.fs+'px';
     if(WP.bold)d.classList.add('bold');
     labels[labels.length-1].kind='wp';
   });
@@ -2060,9 +2271,24 @@ el('wpList').oninput=function(e){
   }
 };
 el('wpList').onclick=function(e){
-  if(!e.target.classList.contains('wpDel'))return;
   const row=e.target.closest('.wpRow');if(!row)return;
+  const o=WP.list[+row.dataset.i];if(!o)return;
+  if(e.target.classList.contains('wpOn')){
+    o.on=o.on?0:1;                 /* 单点：控制画不画，也决定运镜模板用不用它 */
+    renderWP();buildTrack();
+    el('wpHint').textContent=o.on?('已显示「'+o.name+'」'):('已隐藏「'+o.name+'」');
+    return;
+  }
+  if(!e.target.classList.contains('wpDel'))return;
   WP.list.splice(+row.dataset.i,1);renderWP();buildTrack();
+};
+/* 总开关：只影响画面（球/杆/环/标签），WP.list 与运镜模板照旧 */
+el('wpShow').onchange=function(e){
+  WP.show=e.target.checked;
+  renderWP();buildTrack();
+  el('wpHint').textContent=WP.show
+    ? '已显示途径点标记'
+    : '已隐藏全部途径点标记（数据和运镜仍在，导出视频也不会画）';
 };
 el('wpLbl').onchange=function(e){WP.label=e.target.checked;saveWP();saveStyle();buildTrack();};
 /* 标签透视开关：关掉后被山体挡住的标签直接不画（滑杆拖动时也立即生效） */
@@ -2080,13 +2306,97 @@ el('wpSize').oninput=function(e){
   saveWP();saveStyle();buildTrack();};
 el('wpFs').oninput=function(e){
   WP.fs=+e.target.value;el('wpFsVal').textContent=WP.fs+' px';
-  saveWP();saveStyle();buildTrack();};
+  labels.forEach(function(o){o._fs=-1;});     /* 强制按新基准重写字号 */
+  saveWP();saveStyle();updateLabels();};
+/* 联动开关 / 倍数上限：只重排标签，不重建轨迹（拖动时不闪） */
+el('lblAuto').onchange=function(e){LBL.auto=e.target.checked;saveWP();saveStyle();
+  labels.forEach(function(o){o._fs=-1;});updateLabels();};
+el('lblK').oninput=function(e){
+  LBL.kMax=+e.target.value;
+  el('lblKVal').textContent=LBL.kMax.toFixed(1)+'×';
+  saveWP();saveStyle();labels.forEach(function(o){o._fs=-1;});updateLabels();};
+/* 放大起止距离：改完立刻夹紧（d1 必须比 d0 小 80 m 以上），再重排 */
+function lblDistChanged(){
+  LBL.d0=+el('lblD0').value||LBL.d0; LBL.d1=+el('lblD1').value||LBL.d1;
+  lblFixDist();
+  el('lblD0').value=LBL.d0; el('lblD1').value=LBL.d1;
+  saveWP();saveStyle();labels.forEach(function(o){o._fs=-1;});updateLabels();
+}
+el('lblD0').onchange=lblDistChanged;
+el('lblD1').onchange=lblDistChanged;
+/* ---------- 小窗预览：把当前帧按「成片里占多少宽」缩小，用导出同一套逻辑重画标签 ---------- */
+let PIPS=null;
+function pipClose(){if(PIPS){PIPS.remove();PIPS=null;}}
+function pipSim(ratio){
+  ratio=ratio||0.4;
+  if(PIPS){PIPS.remove();PIPS=null;}
+  const src=renderer.domElement;
+  const sw=src.clientWidth||src.width, sh=src.clientHeight||src.height;
+  const W=Math.max(160,Math.round(sw*ratio)), H=Math.max(90,Math.round(sh*ratio));
+  const wrap=document.createElement('div');wrap.id='pipWrap';
+  const bar=document.createElement('div');bar.className='pipBar';
+  bar.innerHTML='<b>小窗预览</b><span class="pipNote">3D 占成片 '
+    +Math.round(ratio*100)+'% 宽 · 标签实际就这么大</span>';
+  [1,.5,.4,.33].forEach(function(r){
+    const b=document.createElement('button');
+    b.textContent=Math.round(r*100)+'%';
+    if(Math.abs(r-ratio)<0.01)b.style.cssText='background:#2f6fed;color:#fff;border-color:#2f6fed';
+    b.onclick=function(){pipSim(r);};
+    bar.appendChild(b);
+  });
+  const cb=document.createElement('button');cb.textContent='关闭';cb.onclick=pipClose;
+  bar.appendChild(cb);
+  wrap.appendChild(bar);
+  const cv=document.createElement('canvas');cv.width=W;cv.height=H;
+  cv.style.width=W+'px';cv.style.height=H+'px';
+  wrap.appendChild(cv);
+  document.body.appendChild(wrap);PIPS=wrap;
+  renderer.render(scene,camera);
+  const ctx=cv.getContext('2d');
+  ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);
+  ctx.drawImage(src,0,0,W,H);
+  /* scl = 高度/1080：与导出公式一致，所以缩到 N% 后就是成片里的小窗观感 */
+  expDrawLabels(ctx,W,H,H/1080,expLabelStyles());
+}
+el('pipSim').onclick=function(){pipSim(0.4);};
+addEventListener('keydown',function(e){
+  if(PIPS&&(e.key==='Escape'||e.key==='f'||e.key==='F')){pipClose();e.preventDefault();}
+});
+window.__pipSim=pipSim;window.__pipClose=pipClose;
+/* 自检：当前联动系数与每个可见标签的实际字号 */
+window.__lblProbe=function(){
+  const d=camera.position.distanceTo(controls.target), shown=[];
+  for(const o of labels){
+    if(o.el.style.display==='none'||o.el.style.opacity==='0')continue;
+    shown.push({kind:o.kind||'mk',fs:+(o._fs||WP.fs).toFixed(1),
+      text:(o.el.textContent||'').slice(0,12)});
+  }
+  return {auto:LBL.auto,kMax:LBL.kMax,base:WP.fs,dist:+d.toFixed(0),
+    near:LBL.near,d0:LBL.d0,d1:LBL.d1,k:+lblKGlob().toFixed(2),shown:shown};
+};
+/* 自检：按导出分辨率出一张「含 canvas 标签」的静帧（dataURL）。
+   和 expRun 走同一个 expDrawLabels，用来确认成片里字号/避让与网页一致 */
+window.__expStill=function(t){
+  const z=expSize(), W=z.W, H=z.H;
+  const cv=document.createElement('canvas');cv.width=W;cv.height=H;
+  const ctx=cv.getContext('2d',{alpha:false});
+  /* 传 null = 用当前相机（页面里手调/推近后的机位），否则按分镜表取 t 时刻 */
+  if(t!==null){
+    t=+t||0;
+    const s=shotAt(SHOTS,t); if(s)applyCam(s);
+    if(window.__applyGrowAt)window.__applyGrowAt(t);
+  }
+  renderer.render(scene,camera);
+  ctx.drawImage(renderer.domElement,0,0,W,H);
+  expDrawLabels(ctx,W,H,H/1080,expLabelStyles());
+  return cv.toDataURL('image/png');
+};
 el('wpClear').onclick=function(){
   WP.list=[];renderWP();buildTrack();el('wpHint').textContent='已清空，可重新添加';};
 el('wpGeo').onclick=function(){
   const fc={type:'FeatureCollection',features:WP.list.map(function(o,i){
     const s=sampleAt(o.t),p=s.p;
-    return {type:'Feature',properties:{seq:i+1,name:o.name,
+    return {type:'Feature',properties:{seq:i+1,name:o.name,on:!!o.on,
       km:+(s.cum/1000).toFixed(3),gps_elev:p[6],dem_elev:p[7],
       lon:p[4],lat:p[5],color:o.color},
       geometry:{type:'Point',coordinates:[p[4],p[5],p[6]]}};
@@ -2094,43 +2404,158 @@ el('wpGeo').onclick=function(){
   download(new Blob([JSON.stringify(fc,null,1)],{type:'application/geo+json'}),
     'waypoints.geojson');
 };
-/* 在 3D 画面上点选轨迹添加途径点；拖拽旋转不会误触发 */
+/* 在 3D 画面上点选轨迹添加途径点。
+   旧版用射线精确打 4.2 m 细管：1300 m 窗口里管只有 1–3 px 宽，实测屏幕命中窗口仅 ±3 px，
+   鼠标抖一点就 miss（远视距直接点不中）——这是「有时能加、有时没反应」的主因。
+   现改为屏幕空间就近吸附：把轨迹采样点投影到屏幕，18 px 内取最近点。 */
 let pickMode=false, pickDown=null;
+const PICK_TOL=18;          /* 屏幕吸附半径（CSS px） */
+const PICK_MOVE=7;          /* 按下→抬起位移上限，超过算拖拽旋转视角 */
 function setPick(on){
   pickMode=on;
   el('wpPick').classList.toggle('active',on);
   renderer.domElement.style.cursor=on?'crosshair':'';
   el('wpHint').textContent=on
-    ? '拾取中：点击画面里的橙色轨迹（可连续添加），再点「拾取」结束'
+    ? '拾取中：点画面里的橙色轨迹（附近自动吸附），可连续添加，再点「拾取」结束'
     : '点「拾取」后在橙色轨迹上点击，或按里程添加';
+  if(!on){pickDown=null;return;}
+  pickDown=null;
+  /* 轨迹如果全在面板后面或画面外，点哪儿都不会有反应——先说清楚 */
+  const vis=pickVisibleCount();
+  if(vis<6)pickToast('画面上几乎看不到轨迹（可能在面板后 / 画面外），先点「聚焦轨迹」再拾取',true);
 }
 el('wpPick').onclick=function(){setPick(!pickMode);};
-const wpRay=new THREE.Raycaster();
+
+/* 命中反馈：命中点起一个向外扩散的圆环，0.65 s 淡出 */
+const PICKFX=[];
+function pickPulse(x,y,z,hex){
+  const m=new THREE.Mesh(new THREE.TorusGeometry(1,0.15,8,32),
+    new THREE.MeshBasicMaterial({color:new THREE.Color('#'+(hex||'ff4d1a')),
+      transparent:true,opacity:.95,side:THREE.DoubleSide,depthTest:false}));
+  m.rotation.x=-Math.PI/2;m.position.set(x,y+1,z);m.renderOrder=30;
+  trackGroup.add(m);PICKFX.push({m:m,t0:performance.now()});
+  pickFxTick();
+}
+function pickFxTick(){
+  const now=performance.now();
+  for(let i=PICKFX.length-1;i>=0;i--){
+    const f=PICKFX[i],k=(now-f.t0)/650;
+    if(k>=1){trackGroup.remove(f.m);f.m.geometry.dispose();f.m.material.dispose();
+      PICKFX.splice(i,1);continue;}
+    const sc=WP.size*(0.7+k*3.4);
+    f.m.scale.set(sc,sc,sc);f.m.material.opacity=.95*(1-k);
+  }
+  if(PICKFX.length)requestAnimationFrame(pickFxTick);
+}
+
+/* 屏幕空间最近轨迹点：{o,d} 命中 / {miss,d} / {occluded} */
+const _pv=new THREE.Vector3();
+function pickTrackAt(px,py){
+  const r=renderer.domElement.getBoundingClientRect();
+  if(px<r.left||px>r.right||py<r.top||py>r.bottom)return {miss:true,d:Infinity};
+  const sx=px-r.left, sy=py-r.top, yi=el('gpsMode').checked?2:1;
+  group.updateMatrixWorld(true); camera.updateMatrixWorld(true);
+  let best=null,bd=Infinity;
+  for(let i=0;i<TRKP.length;i++){
+    const o=TRKP[i];
+    _pv.set(o.p[0],trackY(o.p,yi),o.p[3]);
+    group.localToWorld(_pv); _pv.project(camera);
+    if(_pv.z<-1||_pv.z>1)continue;                 /* 相机后方 / 视锥外 */
+    const dx=(_pv.x*.5+.5)*r.width-sx, dy=(-_pv.y*.5+.5)*r.height-sy;
+    const d=Math.hypot(dx,dy);
+    if(d<bd){bd=d;best=o;}
+  }
+  if(typeof window!=='undefined')window.__lastPick={px:px,py:py,d:bd,t:best?best.cum/TRKLEN:null};
+  if(!best||bd>PICK_TOL)return {miss:true,d:bd};
+  /* 不做地形遮挡剔除：轨迹 lift 只有 7 m，视线几乎贴着坡面走，
+     "地形比轨迹点更近"在正常坡地上天天成立，会把正中点击也误判成被挡（实测 0 px 都拒）。
+     屏幕空间最近点本身就是用户看到的位置，交给用户在提示里核对里程即可。 */
+  return {o:best,d:bd};
+}
+
+/* 画面内反馈：面板里的 hint 容易看不见，点完在屏幕下方弹一条 1.9 s 的胶囊 */
+const pickToast=(function(){
+  const d=document.createElement('div');
+  d.style.cssText='position:fixed;left:50%;bottom:86px;transform:translateX(-50%) translateY(8px);'
+   +'background:rgba(36,48,66,.93);color:#fff;font:13px/1.5 system-ui,"Microsoft YaHei",sans-serif;'
+   +'padding:7px 16px;border-radius:999px;opacity:0;transition:opacity .18s,transform .18s;'
+   +'pointer-events:none;z-index:60;max-width:66vw;text-align:center;'
+   +'box-shadow:0 6px 20px rgba(20,30,50,.18);white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+  document.body.appendChild(d);
+  let tm=0;
+  return function(msg,bad){
+    d.textContent=msg;
+    d.style.background=bad?'rgba(196,74,32,.94)':'rgba(36,48,66,.93)';
+    d.style.opacity='1'; d.style.transform='translateX(-50%) translateY(0)';
+    clearTimeout(tm);
+    tm=setTimeout(function(){
+      d.style.opacity='0'; d.style.transform='translateX(-50%) translateY(8px)';},1900);
+  };
+})();
+/* 画面里真正露出来的轨迹采样点数（左侧面板右侧到右面板左侧之间） */
+function pickVisibleCount(){
+  const r=renderer.domElement.getBoundingClientRect();
+  const pn=document.querySelector('.panel.info'), pc=document.querySelector('.panel.ctrl');
+  const x0=Math.max(0,pn?pn.getBoundingClientRect().right:0)+6;
+  const x1=Math.min(r.width,pc?pc.getBoundingClientRect().left:r.width)-6;
+  if(x1<=x0)return 0;
+  const yi=el('gpsMode').checked?2:1;
+  group.updateMatrixWorld(true); camera.updateMatrixWorld(true);
+  let n=0;
+  for(let i=0;i<TRKP.length;i++){
+    _pv.set(TRKP[i].p[0],trackY(TRKP[i].p,yi),TRKP[i].p[3]);
+    group.localToWorld(_pv); _pv.project(camera);
+    if(_pv.z<-1||_pv.z>1)continue;
+    const x=(_pv.x*.5+.5)*r.width, y=(-_pv.y*.5+.5)*r.height;
+    if(x>x0&&x<x1&&y>0&&y<r.height)n++;
+  }
+  return n;
+}
+function pickCommit(px,py){
+  const hit=pickTrackAt(px,py);
+  if(hit.miss){
+    const m='没点到轨迹'+(isFinite(hit.d)?'（离橙色线 '+hit.d.toFixed(0)+' px）':'')
+      +'，靠近轨迹再点';
+    el('wpHint').textContent=m; pickToast(m,true);
+    return;
+  }
+  const o=hit.o, p=o.p, yi=el('gpsMode').checked?2:1, ly=trackY(p,yi);
+  for(const w of WP.list){
+    const q=sampleAt(w.t).p;
+    if(Math.hypot(q[0]-p[0],q[3]-p[3])<8){
+      pickPulse(p[0],ly,p[3],w.color);
+      const m='这里已经有「'+w.name+'」，换个位置点';
+      el('wpHint').textContent=m; pickToast(m,true);
+      return;
+    }
+  }
+  const w=addWaypoint(o.cum/TRKLEN);
+  pickPulse(p[0],ly,p[3],w.color);
+  const m='已添加「'+w.name+'」· '+(o.cum/1000).toFixed(2)+' km'
+    +(hit.d>4?' · 就近吸附 '+hit.d.toFixed(0)+' px':'')
+    +(WP.show?'':' · 当前是隐藏状态');
+  el('wpHint').textContent=m+'，可继续点选或改名';
+  pickToast(m,false);
+}
+
 renderer.domElement.addEventListener('pointerdown',function(e){
-  pickDown=[e.clientX,e.clientY];});
+  pickDown=[e.clientX,e.clientY,e.pointerId];
+});
 renderer.domElement.addEventListener('pointerup',function(e){
   if(!pickMode||!pickDown)return;
   const moved=Math.hypot(e.clientX-pickDown[0],e.clientY-pickDown[1]);
-  pickDown=null; if(moved>5)return;
-  const c=renderer.domElement,r=c.getBoundingClientRect();
-  wpRay.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,
-    -((e.clientY-r.top)/r.height*2-1)),camera);
-  group.updateMatrixWorld(true);
-  const tubes=trackGroup.children.filter(function(o){
-    return o.geometry&&o.geometry.type==='TubeGeometry'
-      &&(o.renderOrder===2||o.renderOrder===11);});
-  const hits=wpRay.intersectObjects(tubes,false);
-  if(!hits.length){el('wpHint').textContent='没点到轨迹，请对准橙色线再试';return;}
-  const q=group.worldToLocal(hits[0].point.clone());
-  let best=TRKP[0],bd=Infinity;
-  for(const o of TRKP){const d=Math.hypot(o.p[0]-q.x,o.p[3]-q.z);
-    if(d<bd){bd=d;best=o;}}
-  const w=addWaypoint(best.cum/TRKLEN);
-  el('wpHint').textContent='已添加「'+w.name+'」 @ '+(best.cum/1000).toFixed(2)
-    +' km，可继续点选或改名';
+  pickDown=null;
+  if(moved>PICK_MOVE)return;                        /* 拖拽旋转视角，不算点选 */
+  pickCommit(e.clientX,e.clientY);
 });
+/* 指针被打断、或拖到画布外松手时必须清状态：
+   残留的按下点会让下一次点击被误判成拖拽而整次吞掉（旧版就是这么丢点击的） */
+renderer.domElement.addEventListener('pointercancel',function(){pickDown=null;});
+addEventListener('pointerup',function(){pickDown=null;});
+addEventListener('blur',function(){pickDown=null;});
 window.__waypointProbe=function(){
-  return {count:WP.list.length,size:WP.size,fs:WP.fs,label:WP.label,occ:WP.occ,
+  return {count:WP.list.length,show:WP.show,onCount:WP.list.filter(function(o){return o.on;}).length,
+    size:WP.size,fs:WP.fs,label:WP.label,occ:WP.occ,
     list:WP.list.map(function(o){return {t:+o.t.toFixed(4),name:o.name,
       color:o.color,on:o.on};}),
     spheres:trackGroup.children.filter(function(o){
@@ -2143,8 +2568,10 @@ window.__waypointProbe=function(){
 };
 /* 自检辅助：把某个里程比例的轨迹点投影到屏幕像素，供自动化点击拾取验证 */
 window.__wpScreenAt=function(t){
-  const p=sampleAt(t).p;
-  const v=new THREE.Vector3(p[0],trackY(p,1)*group.scale.y,p[3]).project(camera);
+  const p=sampleAt(t).p, yi=el('gpsMode').checked?2:1;   /* 必须与画管用的是同一高程基准 */
+  const v=new THREE.Vector3(p[0],trackY(p,yi),p[3]);
+  group.updateMatrixWorld(true); camera.updateMatrixWorld(true);
+  group.localToWorld(v); v.project(camera);
   return {x:Math.round((v.x*.5+.5)*innerWidth),
           y:Math.round((-v.y*.5+.5)*innerHeight)};
 };
@@ -2152,6 +2579,7 @@ renderWP();
 function label(text, x, y, z, cls, t){
   const d=document.createElement('div');
   d.className='lbl'+(cls?' '+cls:''); d.textContent=text;
+  d.style.fontSize=WP.fs+'px';       /* 基准字号；推近时由 updateLabels 逐帧放大 */
   document.body.appendChild(d);
   labels.push({p:new THREE.Vector3(x,y,z),el:d,base:y,t:(t===undefined?null:t)});
   return d;
@@ -2335,12 +2763,53 @@ function labelBlocked(w){
   }
   return false;
 }
+/* ---------- 标签字号联动：全览 1×，镜头推近按距离放大 ---------- */
+/* 起止距离至少差 80 m，否则过渡窗口塌成一个点、字号会跳 */
+function lblFixDist(){
+  LBL.d0=Math.min(6000,Math.max(300,+LBL.d0||800));
+  LBL.d1=Math.max(120,Math.min(LBL.d0-80,+LBL.d1||420));
+}
+/* 全览完全不放大：d>=d0 → 1×；推到 d1 及更近 → kMax；中间 smoothstep（两头缓、中间快） */
+function lblKGlob(){
+  if(!LBL.auto)return 1;
+  const d=Math.max(60,camera.position.distanceTo(controls.target));
+  const t=Math.max(0,Math.min(1,(LBL.d0-d)/Math.max(1,LBL.d0-LBL.d1)));
+  return 1+(LBL.kMax-1)*t*t*(3-2*t);
+}
+/* 每个标签的字号（Map）。只有离镜头最近的 near 个拿满放大，其余按距离线性回落。
+   dCut 取「第 near 近的距离 ×1.12」并夹在 1.25–2× 最近距离之间——
+   两个标签几乎等距、排名互换时字号连续变化，不会突然跳一下。
+   **窗口只在「画面内」的标签里取**：轨迹跨度大时，画外的点常比画面里的更靠近相机，
+   拿它定基准会把画面里的字全压回基准大小（近景放大像没生效）。 */
+function lblSizeMap(cand){
+  const m=new Map(), kG=lblKGlob();
+  const live=cand.filter(c=>c.on!==false);
+  if(!live.length||kG<=1.0001){for(const c of cand)m.set(c,WP.fs);return m;}
+  const ds=live.map(c=>Math.max(1,Math.sqrt(c.d))).sort((a,b)=>a-b);
+  const d0=ds[0], dN=ds[Math.min(ds.length,LBL.near)-1];
+  /* near=1 → 窗口只留 6%：只有最近那个吃满，第二近的立刻回基准；
+     near≥2 才放宽到 25%。几乎等距（叠在一起）时两者同大小，避免中途跳字 */
+  const dCut=Math.min(d0*2.0,Math.max(d0*(LBL.near<=1?1.06:1.25),dN*1.12));
+  const span=Math.max(1,dCut-d0);
+  for(const c of cand){
+    /* 画外的标签（会被贴边夹回框内）一律不放大：它本来就不在构图里，
+       放大只会在边框上冒出一个大字，也会把「最近」的判断带偏 */
+    if(c.on===false){m.set(c,WP.fs);continue;}
+    const d=Math.sqrt(c.d);
+    const w=Math.max(0,Math.min(1,(dCut-d)/span));
+    m.set(c,WP.fs*(1+(kG-1)*w));
+  }
+  return m;
+}
+/* 盒子高（CSS：line-height 1.2 + 上下内边距 .18em×2 + 边框）：排版/避让都用它 */
+function lblBoxH(fs){return fs*1.56+2;}
 function updateLabels(){
   syncGrow();                          /* 轨迹生长：按 PLAY 时刻刷 drawRange */
   if(location.search.indexOf('top')>=0){       // 北朝上正俯视：每帧覆盖 OrbitControls
     controls.enabled=false;
     camera.up.set(0,0,-1);
     camera.position.set(0,DIAG*1.4,1);
+    controls.target.set(0,0,0);   /* 俯视是固定机位：目标点也要归零，否则字号联动的距离基准是旧的 */
     camera.lookAt(0,0,0);
     camera.updateMatrixWorld();
   }
@@ -2351,6 +2820,10 @@ function updateLabels(){
   /* 有画幅裁切时标签必须落在框内：原来按整窗换算，竖屏下标签会跑到框外 */
   const VX=CUTF?CUTF.x:0, VY=CUTF?CUTF.y:0,
         VW=CUTF?CUTF.w:innerWidth, VH=CUTF?CUTF.h:innerHeight;
+  /* 裁切边界：有画幅框就用框；自由比例用「两块面板之间」的可见区 */
+  const BX=CUTF?CUTF.x:VIEW.l, BY=CUTF?CUTF.y:0,
+        BW=CUTF?CUTF.w:Math.max(120,VIEW.r-VIEW.l),
+        BH=CUTF?CUTF.h:innerHeight;
   for(const o of labels){
     const w=o.p.clone(); w.y*=sy;                    /* 标签锚点的世界坐标 */
     const v=w.clone().project(camera);
@@ -2370,28 +2843,38 @@ function updateLabels(){
     if(!vis || !gok)continue;
     cand.push({o:o, v:v, d:w.distanceToSquared(camera.position)});
   }
-  /* 近的先占位。撞车的标签最多上移一格，再撞就直接不画——
+  /* 近的先占位。撞车的标签最多上移 3 格，再撞就直接不画——
      以前是循环上移 8 次，低角度时几个标签会叠成一串，看着像挤在一起。 */
   cand.sort((a,b)=>a.d-b.d);
+  /* 字号要先算再排版：避让必须用放大后的真实盒宽/盒高，
+     否则近景的大字会直接压在一起。屏幕坐标顺便算出来，供「画面内」判定用 */
   for(const c of cand){
-    const o=c.o, v=c.v;
+    c.sx=VX+(c.v.x*.5+.5)*VW; c.sy=VY+(-c.v.y*.5+.5)*VH;
+    c.on=(c.sx>VX-40&&c.sx<VX+VW+40&&c.sy>VY-40&&c.sy<VY+VH+40);
+  }
+  const fsM=lblSizeMap(cand);
+  for(const c of cand){
+    const o=c.o, sz=Math.round((fsM.get(c)||WP.fs)*10)/10;
+    if(o._fs!==sz){o._fs=sz;o.el.style.fontSize=sz+'px';}
+  }
+  for(const c of cand){
+    const o=c.o, v=c.v, fsz=o._fs||WP.fs, bh=lblBoxH(fsz);
     let x=VX+(v.x*.5+.5)*VW, y=VY+(-v.y*.5+.5)*VH-6;
     /* 锚点已经出画的标签不必占位，否则会把画面内的标签顶开 */
-    if(x<VX-60 || x>VX+VW+60 || y<VY-60 || y>VY+VH+60){
+    if(x<BX-200 || x>BX+BW+200 || y<BY-200 || y>BY+BH+200){
       o.el.style.display='none'; o.el.style.opacity='1'; continue;
     }
-    const hw=Math.max(o.el.offsetWidth,60)/2+8;
-    /* 贴边的标签往里收：画幅边框不能把字切掉（9:16 时最外侧的地名最容易压在框线上） */
-    x=Math.max(VX+hw,Math.min(VX+VW-hw,x));
-    for(let k=0;k<2;k++){
-      if(!placed.some(p=>Math.abs(p.x-x)<p.hw+hw && Math.abs(p.y-y)<17))break;
-      y-=20;
+    const hwB=Math.max(o.el.offsetWidth,60)/2, hw=hwB+8;
+    /* 压边就隐藏，不再往里夹：夹回来会让标签脱开落点，还会滑到面板底下只剩半截 */
+    if(x-hwB<BX || x+hwB>BX+BW || y>BY+BH || y-bh<BY){
+      o.el.style.display='none'; continue;
     }
-    if(placed.some(p=>Math.abs(p.x-x)<p.hw+hw && Math.abs(p.y-y)<17)){
-      o.el.style.display='none'; continue;           /* 还是撞：让位给更近的标签 */
-    }
-    y=Math.max(VY+14,Math.min(VY+VH-8,y));
-    placed.push({x:x,y:y,hw:hw});
+    const hit=()=>placed.some(p=>Math.abs(p.x-x)<p.hw+hw
+                                 &&Math.abs(p.y-y)<Math.max(p.h,bh));
+    for(let k=0;k<3;k++){ if(!hit())break; y-=bh+4; }
+    /* 上移后可能顶出上边框：同样直接不画，别再往下推（推回去就压到别的标签） */
+    if(hit() || y-bh<BY){o.el.style.display='none'; continue;}
+    placed.push({x:x,y:y,hw:hw,h:bh});
     o.el.style.left=x+'px'; o.el.style.top=y+'px';
   }
 }

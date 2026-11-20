@@ -24,8 +24,8 @@ platforms:
 
 # 山地 3D 沙盘 + 轨迹叠加
 
-> **完整手册**：`D:\agent\svg3d\terrain-hd\MAKING_RULES.md`（换区域前必读，含全部数值依据与 15 条踩坑）
-> **参考工程**：`D:\agent\svg3d\terrain-hd`（结构完整、可直接复制）
+> **完整手册**：`MAKING_RULES.md`（仓库根目录）——换区域前必读，含全部数值依据与 49 条踩坑
+> **参考工程**：本仓库本身就是参考工程（结构完整、可直接复制一份改区域常量）
 
 ## 铁律（违反必返工）
 
@@ -132,6 +132,9 @@ cp -r ../terrain-hd/{_cam_check.mjs,_play_check.mjs,_diag.mjs,MAKING_RULES.md} .
 | 标签加粗 | 途径点名称用 800 字重，缩小或压缩后仍清楚 | 右侧「加粗」勾选框，参数 `wpb=1`；只影响途径点，标注点标签不变 |
 | 标签不透视（默认） | 被山体挡住的途径点标签自动隐藏 | 开关是右侧面板「标签透视（被山挡也显示）」，参数 `wpocc=1`；关着时低角度掠视不会出现背后标签透出来 |
 | 标签防拥挤 | 撞车的标签最多上移一格，再撞就直接隐藏，让位给**更近**的标签 | 以前是循环上移 8 次，低角度会把几个标签叠成一串；判定用相机距离排序 + 屏幕矩形相交 |
+| **标签字号联动** | 基准字号（1080p 画布，默认 34 px）+「随镜头放大」：**只有推到「放大距离」以内才动**，默认 800 m 起、420 m 到底、上限 3×，中间 smoothstep；**只放最近的 1 个**，其余保持基准 | 参数 `wpfs=9..48` `lblk=0..4`（0=关）`lbln=1..9` `lbld0/lbld1`。成片里 3D 画面常缩成 1/3 宽小窗，12 px 缩完只剩 4 px 等于没有，所以基准按**成片占比**定，不是按页面好看定。字号只由 `label()` 的行内 `font-size` 决定，`.lbl.wp` 里别再写死。门槛怎么定：先跑 `node _cam_tpl_check.mjs` 看各运镜模板的 `r=rMin~rMax`，让 d0 落在中景与近景之间（本区中景 1900 m、近景 620–870 m，取 800/420） |
+| **小窗预览** | 途径点区「小窗」按钮：把当前帧按 100/50/40/33% 缩出来，用导出同一套 `expDrawLabels()` 重画标签 | 不用反复出片去剪映里试字号；缩完看不清就是基准还不够大 |
+| 标签压边即隐藏 | 标签盒越出画幅（自由比例时是「两块面板之间」的可见区）就整条不画，不再往里夹 | 夹回来会让标签脱开落点、半截压在面板底下。边界在 `updateLabels()` 的 `BX/BW`；导出用 `0..W/H`。改完跑 `_lbl_check.mjs` 第 10 组。注意 `panelInsets()` 必须把 `display:none` 的面板当 0 占位，否则视频页可用宽度变 0、标签全消失 |
 | **网页直出视频** | 右侧面板**顶部**「⬇ 导出 MP4」：选 24/30/60 fps 与 720p–4K，点一下开始，进度条跑完自动下载 | 纯浏览器内 WebCodecs(H.264)+`mp4-muxer`，10 s 1080p60 ≈ 4 s 出片；尺寸跟「画幅」走（16:9→1920×1080、9:16→1080×1920）；标签按 canvas 2D 重画，导出时别切走标签页 |
 
 改这两处只动 `index.template.html`（面板把手）和 `track.py`（`labelBlocked()` / `updateLabels()`），**不要手改生成的 html**；改完 `python3 track.py && python3 video.py` 重生成，跑 `node _panel_check.mjs` 自检（13 组，含把手/快捷键/刷新记忆/遮挡/不重叠/单文件版/video 页不出 UI）。
@@ -220,10 +223,11 @@ python3 build.py --sat=esri --z-sat=18 2>&1 | grep non_manifold   # 必须 =0
 # 2 轨迹贴地强校验（track.py 内置 assert，不通过会直接报错）
 python3 track.py
 # 3 浏览器自检
-node _cam_check.mjs && node _cam_tpl_check.mjs && node _play_check.mjs && node _panel_check.mjs && node _diag.mjs
+node _cam_check.mjs && node _cam_tpl_check.mjs && node _play_check.mjs && node _panel_check.mjs && node _lbl_check.mjs && node _diag.mjs
 ```
 
 `_panel_check.mjs` 覆盖 13 组：左右把手收起/展开、`[` `]` `H`、刷新记忆、输入框内不触发、标签遮挡、标签不重叠、video 页不出 UI、单文件版可用。
+`_lbl_check.mjs` 覆盖标签字号联动 7 组：全览=基准、中景按距离梯度、近景封顶 3×、关掉回基准、参数串带 `lblk/lbln`、小窗预览出图、导出静帧与网页同源（并写 `_lbl_a~e*.png` 供目视）。
 
 人工确认：默认视角无镜像 → `?top=1` 正俯视对照真实地图 → 低角度掠视不穿地不腾空 → 9:16 主体不出框 → 单文件版双击可开。
 
